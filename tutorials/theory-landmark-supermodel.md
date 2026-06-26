@@ -82,21 +82,21 @@ With a large dataset and time-dependent effects, the supermodel has many paramet
 
 For a single-cause model the unpenalized PPL is given by:
 
-$$ipl^*(\beta,\alpha) := \prod_{i=1}^n \prod_{s:s\le T_i\le s+w} \left( \frac{\exp(Z_i(s)^T \beta(s) + \alpha(s))}{\sum_{s: s \leq T_i \leq s+w} \sum_{j \in R(T_i)} \exp(Z_j(s)^T \beta(s) + \alpha(s))} \right)^{\eta_i}$$
+$$ipl^{\ast}(\beta,\alpha) := \prod_{i=1}^n \prod_{s:s\le T_i\le s+w} \left( \frac{\exp(Z_i(s)^T \beta(s) + \alpha(s))}{\sum_{s: s \leq T_i \leq s+w} \sum_{j \in R(T_i)} \exp(Z_j(s)^T \beta(s) + \alpha(s))} \right)^{\eta_i}$$
 
 Where $R(T)$ is the risk set of patients alive at $T$ and $\eta_i, T_i$  are respectively if the event occurred and time-to-event for patient i. When multiple causes/competing risks are present, the PPL factors over the J competing events, assuming an independent censoring mechanism.9 This allows for the PPL to be maximized by maximizing individual cause-specific Cox models. The PPL for J competing events is given by:
 
-$$ipl^*(B, A) = \prod_{j=1}^J ipl^*(\beta_j, \alpha_j)$$
+$$ipl^{\ast}(B, A) = \prod_{j=1}^J ipl^{\ast}(\beta_j, \alpha_j)$$
 
 where $B = (\beta_1,...,\beta_j)$ and $A = (\alpha_1,...,\alpha_j)$ are the cause-specific coefficients.
 
 The penalized log PPL for a single-cause model is given by the following equation where the penalty $p(\cdot)$ can be a LASSO (the L1 norm) [6], Ridge (the L2 norm) [7], or an elastic net (a combination of the two) [8].
 
-$$\log ipl^* (\beta,\alpha) - \lambda p(\beta,\alpha)$$
+$$\log \ ipl^{\ast} (\beta,\alpha) - \lambda p(\beta,\alpha)$$
 
 For competing events, as the PPL factors over the J competing events assuming an independent censoring mechanism, the penalized log PPL factors, too:
 
-$$\sum_{j=1}^J \left( \log ipl^* (\beta_j,\alpha_j) - \lambda_j p(\beta_j,\alpha_j) \right)$$
+$$\sum_{j=1}^J \left( \log \ ipl^{\ast} (\beta_j,\alpha_j) - \lambda_j p(\beta_j,\alpha_j) \right)$$
 
 Where $\lambda_j$ is a cause-specific penalty. Penalization is thus essentially performed on each cause-specific Cox model separately, in line with the unpenalized method. 
 
