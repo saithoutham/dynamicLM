@@ -8,7 +8,7 @@ regularization.}
 dynamic_lm(...)
 }
 \arguments{
-\item{...}{Arguments to pass to \code{dynamic_lm()}}
+\item{...}{Arguments passed to the appropriate method.}
 }
 \value{
 A fitted landmark supermodel object which has components:
@@ -36,18 +36,50 @@ additional components:
 }
 }
 \description{
-To fit Cox or cause-specific Cox models without regularization see:
+\code{dynamic_lm()} is a generic; the method called depends on the first argument:
+
+Without regularization (fit directly from a stacked landmark dataset):
 \itemize{
-\item \code{\link[=dynamic_lm.LMdataframe]{dynamic_lm.LMdataframe()}} for use on a stacked landmark dataset
-\item \code{\link[=dynamic_lm.data.frame]{dynamic_lm.data.frame()}} for use on a dataframe
+\item \code{\link[=dynamic_lm.LMdataframe]{dynamic_lm.LMdataframe()}} for an "LMdataframe" (the recommended input,
+created with \code{\link[=stack_data]{stack_data()}} and \code{\link[=add_interactions]{add_interactions()}})
+\item \code{\link[=dynamic_lm.data.frame]{dynamic_lm.data.frame()}} for a plain dataframe
 }
 
-To fit penalized Cox or cause-specific Cox models see:
+With regularization (fit from a penalized coefficient path):
 \itemize{
 \item \code{\link[=dynamic_lm.pen_lm]{dynamic_lm.pen_lm()}} without cross-validation
 \item \code{\link[=dynamic_lm.cv.pen_lm]{dynamic_lm.cv.pen_lm()}} with cross-validation
 }
 }
+\section{Survival type}{
+With penalization, this is inferred from the path. Without penalization, this
+is set with the argument \code{type}:
+\itemize{
+\item \code{type = "coxph"} for standard survival data (one event and possible
+censoring). The formula left-hand side has the form \code{Surv(LM, Time, event)}.
+\item \code{type = "CSC"} (or \code{"CauseSpecificCox"}) for competing risks (multiple
+events and possible censoring). The formula left-hand side has the form
+\code{Hist(Time, event, LM)}.
+}
+}
+
+\section{Arguments common to all methods}{
+\itemize{
+\item \code{method}: tie-handling method, defaulting to \code{"breslow"}. See
+\code{\link[survival:coxph]{survival::coxph()}}. Penalized methods always use \code{"breslow"}, matching
+\code{glmnet}.
+\item \code{cluster}: a variable that clusters the observations (e.g. repeated patient
+IDs) for a robust variance. If omitted, it is extracted from the \code{+ cluster(ID)} term in \code{formula}.
+\item \code{x}: logical; if \code{TRUE}, the landmark data is stored in the returned object.
+Required for internal validation.
+\item \code{...}: further arguments passed to \code{\link[survival:coxph]{survival::coxph()}} or
+\code{\link[riskRegression:CSC]{riskRegression::CSC()}}.
+}
+
+Note that formula transformations (e.g. \code{x1 * x2}) are not supported and
+factors must first be converted to dummy variables.
+}
+
 \seealso{
 \code{\link[=dynamic_lm.LMdataframe]{dynamic_lm.LMdataframe()}}, \code{\link[=dynamic_lm.data.frame]{dynamic_lm.data.frame()}},
 \code{\link[=dynamic_lm.pen_lm]{dynamic_lm.pen_lm()}}, \code{\link[=dynamic_lm.cv.pen_lm]{dynamic_lm.cv.pen_lm()}}

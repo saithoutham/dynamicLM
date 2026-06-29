@@ -1,24 +1,28 @@
-- [1 dynamicLM](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#1-dynamiclm)
-- [2 Introduction](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#2-introduction)
-  - [2.1 What is landmarking and when is it used?](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#21-what-is-landmarking-and-when-is-it-used)
-  - [2.2 Installation](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#22-installation)
-- [3 Tutorial: basic example](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#3-tutorial-basic-example)
-  - [3.1 Data preparation](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#31-data-preparation)
-    - [3.1.1 Data](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#311-data)
-    - [3.1.2 Build a super data set](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#312-build-a-super-data-set)
-  - [3.2 Model fitting](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#32-model-fitting)
-    - [3.2.1 Traditional (unpenalized) landmark supermodel](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#321-traditional-unpenalized-landmark-supermodel)
-    - [3.2.2 Penalized landmark supermodel](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#322-penalized-landmark-supermodel)
-  - [3.3 Prediction](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#33-prediction)
-    - [3.3.1 Training data](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#331-training-data)
-    - [3.3.2 Testing data](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#332-testing-data)
-  - [3.4 Model evaluation](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#34-model-evaluation)
-    - [3.4.1 Calibration plots](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#341-calibration-plots)
-    - [3.4.2 Predictive performance](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#342-predictive-performance)
-    - [3.4.3 Bootstrapping](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#343-bootstrapping)
-    - [3.4.4 External validation](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#344-external-validation)
-    - [3.4.5 Visualize individual dynamic risk trajectories](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#345-visualize-individual-dynamic-risk-trajectories)
-- [4 References](https://github.com/thehanlab/dynamicLM/tree/main?tab=readme-ov-file#4-references)
+- [1 dynamicLM](#dynamiclm)
+- [2 Introduction](#introduction)
+  - [2.1 What is landmarking and when is it
+    used?](#what-is-landmarking-and-when-is-it-used)
+  - [2.2 Installation](#installation)
+- [3 Tutorial: basic example](#tutorial-basic-example)
+  - [3.1 Data preparation](#data-preparation)
+    - [3.1.1 Data](#data)
+    - [3.1.2 Build a super data set](#build-a-super-data-set)
+  - [3.2 Model fitting](#model-fitting)
+    - [3.2.1 Traditional (unpenalized) landmark
+      supermodel](#traditional-unpenalized-landmark-supermodel)
+    - [3.2.2 Penalized landmark
+      supermodel](#penalized-landmark-supermodel)
+  - [3.3 Prediction](#prediction)
+    - [3.3.1 Training data](#training-data)
+    - [3.3.2 Testing data](#testing-data)
+  - [3.4 Model evaluation](#model-evaluation)
+    - [3.4.1 Calibration plots](#calibration-plots)
+    - [3.4.2 Predictive performance](#predictive-performance)
+    - [3.4.3 Bootstrapping](#bootstrapping)
+    - [3.4.4 External validation](#external-validation)
+    - [3.4.5 Visualize individual dynamic risk
+      trajectories](#visualize-individual-dynamic-risk-trajectories)
+- [4 References](#references)
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
@@ -115,9 +119,9 @@ In order to use `dynamicLM`, you need the development version of
 with:
 
 ``` r
-# install.packages("devtools")
-devtools::install_github("tagteam/riskRegression")
-devtools::install_github("thehanlab/dynamicLM")
+# install.packages("pak")
+pak::pak("tagteam/riskRegression")
+pak::pak("thehanlab/dynamicLM")
 ```
 
 Package documentation can be found in [this
@@ -200,7 +204,7 @@ covars <- list(fixed = fixed_variables, varying = varying_variables)
 ```
 
 We will produce 5-year dynamic predictions of transplant (`w`). Landmark
-time points (`lms`) are set as every year between 0 and 5 years to train
+time points (`lms`) are set as every year between 0 and 4 years to train
 the model. This means we are only interested in predicting the 5-year
 risk of transplant for patients both at baseline and at later points -
 up to 4 years after diagnosis.
@@ -435,9 +439,10 @@ likelihood $l$ of the model with a penalty $p$, which can be a LASSO
 (the L1-norm), Ridge (the L2-norm), or an elastic net (a combination of
 the two).
 
-$$\log l(\beta, \alpha) - \lambda p(\beta, \alpha)$$ Penalization
-balances model complexity and goodness-of-fit, where the optimal weight
-$\lambda$ is chosen via cross-validation.
+$$\log l(\beta, \alpha) - \lambda p(\beta, \alpha)$$
+
+Penalization balances model complexity and goodness-of-fit, where the
+optimal weight $\lambda$ is chosen via cross-validation.
 
 To fit a penalized landmark supermodel, the lmdata is the only required
 input. First, either a coefficient path (using `pen_lm`) or a
@@ -509,7 +514,7 @@ plot(cv_model, all_causes = TRUE)
 
 <img src="man/figures/README-cvplot-1.png" width="100%" />
 
-To specify only a subset of covariates to fit to
+To specify only a subset of covariates to fit to:
 
 ``` r
 cv_model1 <- cv.pen_lm(lmdata, y = c("male", "male_LM1", "male_LM2", 
@@ -542,7 +547,7 @@ coefficients. For further arguments, see `?plot.penLMCSC` or
 ``` r
 # Add more space on the sides
 par(mar = c(5, 10, 1, 7)) # default is c(5.1, 4.1, 4.1, 2.1)
-plot(supermodel_pen, max_coefs=15)
+plot(supermodel_pen, max_coefs = 15)
 ```
 
 <img src="man/figures/README-covarplot-1.png" width="100%" />
@@ -605,8 +610,8 @@ Alternatively, test data can be a data frame. As a prediction is made
 for an individual at a specific prediction time, both a prediction
 (“landmark”) time (e.g., at baseline, at 2 years, etc) and an individual
 (i.e., covariate values set at the landmark time-point) must be given.
-For example, we can prediction *w*-year risk from baseline using an
-entry from the very original data frame.
+For example, we can prediction *w*-year risk using entries from the
+original data frame.
 
 ``` r
 example_test <- pbc_df[1:5, ]
@@ -690,7 +695,7 @@ information. The first plot below shows how one can remove confidence
 intervals and plot the time-dependent contrasts. One can also plot if
 model summary metrics are significantly different or not. The second
 plot adds the p-values of the significant comparisons to a plot. The
-third plots the contrasts directly (third example).
+third plots the contrasts directly.
 
 See `?plot.LMScore` for more information.
 
@@ -731,6 +736,8 @@ fitting the model (i.e., when calling `dynamic_lm()`).
 scores <- score(list("LM" = supermodel, "penLM" = supermodel_pen),
               times = c(0, 2, 4), metrics = "auc",
               split.method = "bootcv", B = 10)       # 10 bootstraps
+#> 
+#> --> WARNING: 1 bootstrap(s) dropped due to errors/unreliable results. Results are computed on the remaining iterations.
 ```
 
 ### 3.4.4 External validation
@@ -802,8 +809,6 @@ plotrisk(supermodel, dat, format = "long", ylim = c(0, 0.35),
 We can see that the individual with higher bilirunbin levels (id=231)
 has a higher and increasing 5-year risk of transplant. This can be
 explained by the dynamic hazard rate of bilirunbin (seen above).
-Further, the risk of transplant rapidly increases when the bilirunbin
-levels rise.
 
 # 4 References
 

@@ -69,9 +69,9 @@ In order to use `dynamicLM`, you need the development version of
 `riskRegression`. Both are available from [GitHub](https://github.com/) with:
 
 ```{r, echo=TRUE, warning=FALSE, message=FALSE, results='hide', eval=FALSE}
-# install.packages("devtools")
-devtools::install_github("tagteam/riskRegression")
-devtools::install_github("thehanlab/dynamicLM")
+# install.packages("pak")
+pak::pak("tagteam/riskRegression")
+pak::pak("thehanlab/dynamicLM")
 ```
 
 Package documentation can be found in [this pdf](https://github.com/thehanlab/dynamicLM/blob/main/tutorials/dynamicLM_1.0.0.pdf) and more information about any function can be obtained by running `?function_name`.
@@ -119,7 +119,7 @@ varying_variables <- c("albumin", "alk.phos", "ascites", "ast", "bili",
 covars <- list(fixed = fixed_variables, varying = varying_variables)
 ```
 
-We will produce 5-year dynamic predictions of transplant (`w`). Landmark time points (`lms`) are set as every year between 0 and 5 years to train the model. This means we are only interested in predicting the 5-year risk of transplant for patients both at baseline and at later points - up to 4 years after diagnosis.
+We will produce 5-year dynamic predictions of transplant (`w`). Landmark time points (`lms`) are set as every year between 0 and 4 years to train the model. This means we are only interested in predicting the 5-year risk of transplant for patients both at baseline and at later points - up to 4 years after diagnosis.
 
 ```{r}
 w <- 5                    # Predict the 5-year outcome of transplant
@@ -257,6 +257,7 @@ If the super dataset is not created via the functions `stack_data()` and `add_in
 With a large dataset and time-dependent effects, the supermodel has numerous parameters. To handle this high-dimensionality and ensure generalizability, one can alternatively fit a penalized model, where coefficients are shrunk or selected by penalizing the pseudo-partial likelihood $l$ of the model with a penalty $p$, which can be a LASSO (the L1-norm), Ridge (the L2-norm), or an elastic net (a combination of the two).
 
 $$\log l(\beta, \alpha) - \lambda p(\beta, \alpha)$$
+
 Penalization balances model complexity and goodness-of-fit, where the optimal weight $\lambda$ is chosen via cross-validation.
 
 To fit a penalized landmark supermodel, the lmdata is the only required input. First, either a coefficient path (using `pen_lm`) or a cross-validated model (using `cv.pen_lm`) is created for multiple penalties (lambdas $\lambda$). Then, a specific penalty can be chosen to fit a model via `dynamic_lm`.
@@ -312,7 +313,7 @@ par(mfrow = c(1, 2))
 plot(cv_model, all_causes = TRUE)
 ```
 
-To specify only a subset of covariates to fit to
+To specify only a subset of covariates to fit to:
 
 ```{r, eval=F, warning=F}
 cv_model1 <- cv.pen_lm(lmdata, y = c("male", "male_LM1", "male_LM2", 
@@ -338,7 +339,7 @@ The largest coefficients can also be plot. Here, we plot the 15 largest coeffici
 ```{r covarplot, fig.height=4, fig.width=8}
 # Add more space on the sides
 par(mar = c(5, 10, 1, 7)) # default is c(5.1, 4.1, 4.1, 2.1)
-plot(supermodel_pen, max_coefs=15)
+plot(supermodel_pen, max_coefs = 15)
 ```
 
 The hazard ratios can also be plot, as for an unpenalized model, by setting `HR = TRUE`.
@@ -381,7 +382,7 @@ Test data can be a stacked dataset (lmdata):
 p_test <- predict(supermodel, lmdata)
 ```
 
-Alternatively, test data can be a data frame. As a prediction is made for an individual at a specific prediction time, both a prediction (“landmark”) time (e.g., at baseline, at 2 years, etc) and an individual (i.e., covariate values set at the landmark time-point) must be given. For example, we can prediction *w*-year risk from baseline using an entry from the very original data frame.
+Alternatively, test data can be a data frame. As a prediction is made for an individual at a specific prediction time, both a prediction (“landmark”) time (e.g., at baseline, at 2 years, etc) and an individual (i.e., covariate values set at the landmark time-point) must be given. For example, we can prediction *w*-year risk using entries from the original data frame.
 
 ```{r predtest}
 example_test <- pbc_df[1:5, ]
@@ -451,7 +452,7 @@ par(mfrow = c(1, 4))
 plot(scores, summary = TRUE)
 ```
 
-Additional parameters control which plots to include and additional information. The first plot below shows how one can remove confidence intervals and plot the time-dependent contrasts. One can also plot if model summary metrics are significantly different or not. The second plot adds the p-values of the significant comparisons to a plot. The third plots the contrasts directly (third example). 
+Additional parameters control which plots to include and additional information. The first plot below shows how one can remove confidence intervals and plot the time-dependent contrasts. One can also plot if model summary metrics are significantly different or not. The second plot adds the p-values of the significant comparisons to a plot. The third plots the contrasts directly. 
 
 See `?plot.LMScore` for more information.
 
@@ -571,10 +572,7 @@ plotrisk(supermodel, dat, format = "long", ylim = c(0, 0.35),
          x.legend = "topleft")
 ```
 
-We can see that the individual with higher bilirunbin levels (id=231) has a
-higher and increasing 5-year risk of transplant. This can be explained
-by the dynamic hazard rate of bilirunbin (seen above). Further, the risk
-of transplant rapidly increases when the bilirunbin levels rise.
+We can see that the individual with higher bilirunbin levels (id=231) has a higher and increasing 5-year risk of transplant. This can be explained by the dynamic hazard rate of bilirunbin (seen above). 
 
 # References
 
