@@ -59,6 +59,11 @@ stack_data <- function(data, outcome, lms, w, covs, format = c("wide", "long"),
                        id, rtime, left.open = FALSE) {
   ### Check input ###
 
+  # Coerce tibbles (and other data.frame subclasses) to plain data frames, as
+  # tibble's stricter subsetting causes issues downstream.
+  if (inherits(data, "tbl") || !identical(class(data), "data.frame"))
+    data <- as.data.frame(data)
+
   # Check all the columns are in the data
   if (!all(covs$fixed %in% colnames(data))) {
     stop(paste("Fixed column(s): ",
