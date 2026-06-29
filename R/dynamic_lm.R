@@ -2,15 +2,43 @@
 #'   regularization.
 #'
 #' @description
-#' To fit Cox or cause-specific Cox models without regularization see:
-#' * [dynamic_lm.LMdataframe()] for use on a stacked landmark dataset
-#' * [dynamic_lm.data.frame()] for use on a dataframe
+#' `dynamic_lm()` is a generic; the method called depends on the first argument:
 #'
-#' To fit penalized Cox or cause-specific Cox models see:
+#' Without regularization (fit directly from a stacked landmark dataset):
+#' * [dynamic_lm.LMdataframe()] for an "LMdataframe" (the recommended input,
+#'   created with [stack_data()] and [add_interactions()])
+#' * [dynamic_lm.data.frame()] for a plain dataframe
+#'
+#' With regularization (fit from a penalized coefficient path):
 #' * [dynamic_lm.pen_lm()] without cross-validation
 #' * [dynamic_lm.cv.pen_lm()] with cross-validation
 #'
-#' @param ... Arguments to pass to `dynamic_lm()`
+#' @details
+#' # Survival type
+#' With penalization, this is inferred from the path. Without penalization, this 
+#' is set with the argument `type`:
+#' * `type = "coxph"` for standard survival data (one event and possible
+#'   censoring). The formula left-hand side has the form `Surv(LM, Time, event)`.
+#' * `type = "CSC"` (or `"CauseSpecificCox"`) for competing risks (multiple
+#'   events and possible censoring). The formula left-hand side has the form
+#'   `Hist(Time, event, LM)`.
+#'
+#' # Arguments common to all methods
+#' * `method`: tie-handling method, defaulting to `"breslow"`. See
+#'   [survival::coxph()]. Penalized methods always use `"breslow"`, matching
+#'   `glmnet`.
+#' * `cluster`: a variable that clusters the observations (e.g. repeated patient
+#'   IDs) for a robust variance. If omitted, it is extracted from the `+
+#'   cluster(ID)` term in `formula`.
+#' * `x`: logical; if `TRUE`, the landmark data is stored in the returned object.
+#'   Required for internal validation.
+#' * `...`: further arguments passed to [survival::coxph()] or
+#'   [riskRegression::CSC()].
+#'
+#' Note that formula transformations (e.g. `x1 * x2`) are not supported and
+#' factors must first be converted to dummy variables.
+#'
+#' @param ... Arguments passed to the appropriate method.
 #'
 #' @return A fitted landmark supermodel object which has components:
 #'   - model: fitted model
