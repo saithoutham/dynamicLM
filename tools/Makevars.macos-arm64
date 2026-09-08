@@ -1,0 +1,6 @@
+# Project-local workaround for an R binary whose default FLIBS points at a
+# missing CRAN gfortran installation. Pass with R_MAKEVARS_USER only when the
+# Homebrew GCC toolchain is present.
+override FC = /opt/homebrew/bin/gfortran
+override F77 = /opt/homebrew/bin/gfortran
+override FLIBS = -L/opt/homebrew/opt/gcc/lib/gcc/current -L/opt/homebrew/opt/gcc/lib/gcc/current/gcc/aarch64-apple-darwin24/16 -lemutls_w -lheapt_w -lgfortran -lquadmath
