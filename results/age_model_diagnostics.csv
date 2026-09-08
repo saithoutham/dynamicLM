@@ -1,0 +1,4 @@
+"dataset","cause","observations_used","events_used","coefficient_count","nonfinite_coefficients","nonfinite_coefficient_terms","nonfinite_standard_errors","nonfinite_standard_error_terms","maximum_absolute_finite_coefficient"
+"pbcseq",1,189,12,7,1,"LM1",0,"",7.21119207459106
+"pbcseq",2,189,52,7,1,"LM1",0,"",6.66008636097209
+"nafld",1,16890,762,5,1,"LM1",0,"",0.588365389513748
