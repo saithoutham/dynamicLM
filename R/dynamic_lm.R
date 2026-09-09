@@ -186,6 +186,7 @@ dynamic_lm.LMdataframe <-  function(lmdata,
   # Save the arguments in 'evaluated' form, so we don't have to find them later
   args <- match.call()
   args$lmdata <- NULL # don't need
+  args$formula <- formula
   evaluated_args <- as.list(args)
   function_name <- evaluated_args[[1]]
   evaluated_args <- lapply(evaluated_args[-1], eval)
@@ -197,6 +198,14 @@ dynamic_lm.LMdataframe <-  function(lmdata,
   func_covars <- lmdata$func_covars
   func_lms <- lmdata$func_lms
   lm_col <- lmdata$lm_col
+  entry_col <- if (is.null(lmdata$entry_col)) lm_col else lmdata$entry_col
+  lhs_vars <- all.vars(formula[[2]])
+  lhs_entry <- if (type == "coxph") lhs_vars[1L] else lhs_vars[length(lhs_vars)]
+  if (length(lhs_entry) != 1L || !identical(lhs_entry, entry_col))
+    stop(paste0("Formula left-hand side must use `", entry_col,
+                "` as its counting-process entry for entry_mode='",
+                if (is.null(lmdata$entry_mode)) "shared" else lmdata$entry_mode,
+                "'."))
   original.landmarks <- data[[lm_col]]
   end_time <- lmdata$end_time
   outcome <- lmdata$outcome
@@ -286,6 +295,7 @@ dynamic_lm.data.frame <- function(lmdata,
   # Save the arguments in 'evaluated' form, so we don't have to find them later
   args <- match.call()
   args$lmdata <- NULL # do not need (heavy)
+  args$formula <- formula
   evaluated_args <- as.list(args)
   function_name <- evaluated_args[[1]]
   evaluated_args <- lapply(evaluated_args[-1], eval)
@@ -442,6 +452,7 @@ dynamic_lm.pen_lm <- function(object, lambda, x = FALSE, ...) {
   all_covs <- lmdata$all_covs
   id_col <- lmdata$id_col
   lm_col <- lmdata$lm_col
+  entry_col <- if (is.null(lmdata$entry_col)) lm_col else lmdata$entry_col
   alpha <- attr(object, "alpha")
   pen_args <- attr(object, "args")
 
@@ -450,7 +461,7 @@ dynamic_lm.pen_lm <- function(object, lambda, x = FALSE, ...) {
     if (inherits(lambda, "list")) lambda <- lambda[[1]]
     glmnet_coefs <- as.vector(stats::coef(object[[1]], s = lambda))
 
-    entry <- lmdata$lm_col
+    entry <- entry_col
     exit <- lmdata$outcome$time
     status <- lmdata$outcome$status
     LHS_surv <- paste0("Surv(", entry, ",", exit, ",", status, ")")
@@ -475,7 +486,7 @@ dynamic_lm.pen_lm <- function(object, lambda, x = FALSE, ...) {
       as.vector(stats::coef(object[[i]], s = lambda[[i]]))
     })
 
-    entry <- lmdata$lm_col
+    entry <- entry_col
     exit <- lmdata$outcome$time
     status <- lmdata$outcome$status
     LHS <- paste0("Hist(", exit, ",", status, ",", entry, ")")
@@ -518,6 +529,9 @@ dynamic_lm.pen_lm <- function(object, lambda, x = FALSE, ...) {
               LHS = LHS,
               id_col = id_col,
               lm_col = lm_col,
+              entry_col = entry_col,
+              entry_mode = if (is.null(lmdata$entry_mode)) "shared" else lmdata$entry_mode,
+              observation_entry_col = lmdata$observation_entry_col,
               linear.predictors = linear.predictors,
               original.landmarks = original.landmarks,
               args = args,

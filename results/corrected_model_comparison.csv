@@ -1,0 +1,9 @@
+"dataset","entry_mode","observations_used","events_used","unique_subjects","term","estimate","robust_se"
+"pbcseq_death","strict",167,38,159,"male",1.56044991818792,0.548613578727603
+"pbcseq_death","strict",167,38,159,"log_bili_z",1.43646088574071,0.2044016102763
+"pbcseq_death","delayed",410,111,281,"male",0.627240997789671,0.270922706560837
+"pbcseq_death","delayed",410,111,281,"log_bili_z",1.03030481543166,0.0930492672579098
+"nafld","strict",7993,429,7167,"male",0.362134256715034,0.0969017022150356
+"nafld","strict",7993,429,7167,"bmi_z",0.128007041433175,0.0759305150780572
+"nafld","delayed",17217,890,11218,"male",0.368595842861945,0.0673595691163256
+"nafld","delayed",17217,890,11218,"bmi_z",0.184504050511935,0.0447801920207835

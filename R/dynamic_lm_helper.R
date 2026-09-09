@@ -117,6 +117,12 @@ dynamic_lm_helper <- function(formula, type, data, lmdata, method, cluster,
               LHS = LHS,
               id_col = id_col,
               lm_col = lm_col,
+              entry_col = if (inherits(lmdata, "LMdataframe") &&
+                             !is.null(lmdata$entry_col)) lmdata$entry_col else lm_col,
+              entry_mode = if (inherits(lmdata, "LMdataframe") &&
+                              !is.null(lmdata$entry_mode)) lmdata$entry_mode else "shared",
+              observation_entry_col = if (inherits(lmdata, "LMdataframe"))
+                lmdata$observation_entry_col else NULL,
               linear.predictors = linear.predictors,
               original.landmarks = original.landmarks,
               args = args

@@ -1,0 +1,3 @@
+"model","AUC","Brier","dataset","entry_mode"
+"pbcseq_death_strict",0.901556221324962,0.164283975398583,"pbcseq_death","strict"
+"pbcseq_death_delayed",0.816041408564797,0.151393704988398,"pbcseq_death","delayed"

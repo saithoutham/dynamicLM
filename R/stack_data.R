@@ -29,6 +29,12 @@
 #' @param left.open Boolean (default = FALSE), indicating if the intervals for
 #'   the time-varying covariates are open on the left (and closed on the right)
 #'   or vice-versa.
+#' @param entry Optional character string naming subject-specific observation
+#'   entry time. Required for age-scale or other staggered-entry analyses.
+#' @param entry_mode Observation-entry rule. `"shared"` is the backward-
+#'   compatible default. `"strict"` includes only subjects observed at the
+#'   landmark. `"delayed"` also includes subjects first observed during the
+#'   prediction window and stores their analysis start in `.LM_entry`.
 #'
 #' @return An object of class "LMdataframe". This the following components:
 #'   - data: containing the stacked data set, i.e., the outcome and the values
@@ -56,8 +62,12 @@
 #' @export
 #'
 stack_data <- function(data, outcome, lms, w, covs, format = c("wide", "long"),
-                       id, rtime, left.open = FALSE) {
+                       id, rtime, left.open = FALSE, entry = NULL,
+                       entry_mode = c("shared", "strict", "delayed")) {
   ### Check input ###
+
+  format <- match.arg(format)
+  entry_mode <- match.arg(entry_mode)
 
   # Coerce tibbles (and other data.frame subclasses) to plain data frames, as
   # tibble's stricter subsetting causes issues downstream.
@@ -87,8 +97,24 @@ stack_data <- function(data, outcome, lms, w, covs, format = c("wide", "long"),
   }
   if (!(id %in% colnames(data)))
     stop(paste("ID column ", id, "is not in the data."))
-  if (!(rtime %in% colnames(data)))
-    stop(paste("rtime column ", rtime, "is not in the data."))
+  if (format == "long") {
+    if (missing(rtime))
+      stop("argument rtime must be specified for long format data.")
+    if (!(rtime %in% colnames(data)))
+      stop(paste("rtime column ", rtime, "is not in the data."))
+  }
+  if (entry_mode != "shared") {
+    if (is.null(entry) || length(entry) != 1L || !is.character(entry))
+      stop("argument entry must name one column when entry_mode is not 'shared'.")
+    if (!(entry %in% colnames(data)))
+      stop(paste("Entry column", entry, "is not in the data."))
+    if (!is.numeric(data[[entry]]) || any(!is.finite(data[[entry]])))
+      stop("Observation entry times must be finite numeric values.")
+    if (any(data[[entry]] > data[[outcome$time]]))
+      stop("Observation entry cannot exceed outcome time.")
+    if (".LM_entry" %in% colnames(data))
+      stop("Column name .LM_entry is reserved for delayed-entry landmark data.")
+  }
 
   # Make sure to not duplicate columns
   fixed <- setdiff(covs$fixed, c(outcome$time, outcome$status))
@@ -106,7 +132,7 @@ stack_data <- function(data, outcome, lms, w, covs, format = c("wide", "long"),
   all_covs <- c(covs$fixed, covs$varying)
 
   # Make sure that (ID, rtime) is never duplicated
-  if (sum(duplicated(data[, c(id, rtime)])) > 0) {
+  if (format == "long" && sum(duplicated(data[, c(id, rtime)])) > 0) {
     stop(tidymess("There are multiple entries for some patients (i.e., id
                   column) at some (running) time points (i.e., rtime column).
                   There can only be one entry for each patient at each time
@@ -147,7 +173,8 @@ stack_data <- function(data, outcome, lms, w, covs, format = c("wide", "long"),
 
     lmdata <- lapply(lms, function(lm) {
       get_lm_data(data = data, outcome = outcome, lm = lm, horizon = lm + w,
-                  covs = covs, format = "wide", left.open = left.open)
+                  covs = covs, format = "wide", left.open = left.open,
+                  entry = entry, entry_mode = entry_mode)
       })
     lmdata <- do.call(rbind, lmdata)
 
@@ -163,7 +190,8 @@ stack_data <- function(data, outcome, lms, w, covs, format = c("wide", "long"),
     lmdata <- lapply(lms, function(lm) {
       get_lm_data(data = data, outcome = outcome, lm = lm, horizon = lm + w,
                   covs = covs, format = "long", id = id, rtime = rtime,
-                  left.open = left.open, split.data = split.data)
+                  left.open = left.open, split.data = split.data,
+                  entry = entry, entry_mode = entry_mode)
     })
     lmdata <- do.call(rbind, lmdata)
 
@@ -174,6 +202,9 @@ stack_data <- function(data, outcome, lms, w, covs, format = c("wide", "long"),
     w = w,
     end_time = lms[length(lms)],
     lm_col = "LM",
+    entry_col = if (entry_mode == "delayed") ".LM_entry" else "LM",
+    observation_entry_col = if (entry_mode == "shared") NULL else entry,
+    entry_mode = entry_mode,
     id_col = id,
     all_covs = all_covs
   )

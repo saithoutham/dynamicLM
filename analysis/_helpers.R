@@ -91,6 +91,17 @@ trace_values <- function(report, labels, values, units, script, function_name,
   invisible(rows)
 }
 
+drop_trace_values <- function(report, labels) {
+  path <- init_trace()
+  stopifnot(length(report) == 1L, nzchar(report), all(nzchar(labels)))
+  existing <- utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  keys <- paste(report, labels, sep = "::")
+  out <- existing[!existing$trace_id %in% keys, , drop = FALSE]
+  stopifnot(!anyDuplicated(out$trace_id))
+  utils::write.csv(out, path, row.names = FALSE, na = "")
+  invisible(nrow(existing) - nrow(out))
+}
+
 timed <- function(expr) {
   start <- proc.time()[["elapsed"]]
   value <- force(expr)

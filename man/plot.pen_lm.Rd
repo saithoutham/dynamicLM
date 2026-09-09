@@ -3,7 +3,7 @@
 \name{plot.pen_lm}
 \alias{plot.pen_lm}
 \title{Plot the coefficient path created by calling \code{\link[=pen_lm]{pen_lm()}}, analogous to
-plotting from \code{\link[=glmnet]{glmnet()}}}
+plotting from \code{\link[glmnet:glmnet]{glmnet::glmnet()}}}
 \usage{
 \method{plot}{pen_lm}(
   x,
@@ -18,7 +18,7 @@ plotting from \code{\link[=glmnet]{glmnet()}}}
 \arguments{
 \item{x}{a fitted \code{\link[=pen_lm]{pen_lm()}} object}
 
-\item{xvar}{As in \code{\link[=glmnet]{glmnet()}}: "What is on the X-axis. "\code{norm}" plots against
+\item{xvar}{As in \code{\link[glmnet:glmnet]{glmnet::glmnet()}}: "What is on the X-axis. "\code{norm}" plots against
 the L1-norm of the coefficients, "\code{lambda}" against the log-lambda
 sequence, and "\code{dev}" against the percent deviance explained."}
 

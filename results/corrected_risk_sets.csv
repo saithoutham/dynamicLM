@@ -1,0 +1,17 @@
+"dataset","entry_mode","LM","rows"
+"pbcseq_death","strict",40,38
+"pbcseq_death","strict",50,67
+"pbcseq_death","strict",60,62
+"pbcseq_death","delayed",40,138
+"pbcseq_death","delayed",50,164
+"pbcseq_death","delayed",60,108
+"nafld","strict",40,1124
+"nafld","strict",50,2324
+"nafld","strict",60,2220
+"nafld","strict",70,1576
+"nafld","strict",80,749
+"nafld","delayed",40,3593
+"nafld","delayed",50,5311
+"nafld","delayed",60,4370
+"nafld","delayed",70,2740
+"nafld","delayed",80,1203

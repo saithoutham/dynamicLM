@@ -10,7 +10,7 @@ Description: The goal of dynamicLM is to provide a simple framework to make dyna
 License: GPL (>= 3)
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
 Depends: 
     prodlim (>= 2019.11.13),
     R (>= 2.10),
@@ -23,7 +23,9 @@ Imports:
     stats,
     utils
 Suggests:
+    here,
     latex2exp,
     msm (>= 1.6.9),
-    pec (>= 2021.10.11)
+    pec (>= 2021.10.11),
+    testthat
 LazyData: true

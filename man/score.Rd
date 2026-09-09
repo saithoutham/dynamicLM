@@ -58,7 +58,7 @@ is obtained from the prediction object.}
 
 \item{conf.int}{Confidence interval (CI) coverage. Default is 0.95. If
 bootstrapping, CIs are calculated from empirical quantiles. If not, for
-right censored data, they are calculated by the package \link{riskRegression} as
+right censored data, they are calculated by the package \link[riskRegression:riskRegression]{riskRegression::riskRegression} as
 in Blanche et al (references).}
 
 \item{contrasts}{If TRUE, perform model comparison tests.}

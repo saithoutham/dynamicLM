@@ -3,7 +3,7 @@
 \name{plot.cv.pen_lm}
 \alias{plot.cv.pen_lm}
 \title{Plot cross-validation curve created by \code{\link[=cv.pen_lm]{cv.pen_lm()}}, analogous to plotting
-from \code{\link[=cv.glmnet]{cv.glmnet()}}}
+from \code{\link[glmnet:cv.glmnet]{glmnet::cv.glmnet()}}}
 \usage{
 \method{plot}{cv.pen_lm}(
   x,

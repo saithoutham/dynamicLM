@@ -1,6 +1,10 @@
-^.*\.Rproj$
-^\.Rproj\.user$
-^LICENSE\.md$
-^README\.Rmd$
-^data-raw$
-^example_code/*$
+^\.here$
+^analysis$
+^reports$
+^results$
+^tools$
+^INNOVATIONS\.md$
+^tutorials$
+^LICENSE$
+^dynamicLM_[^/]*\.tar\.gz$
+^dynamicLM\.Rcheck$

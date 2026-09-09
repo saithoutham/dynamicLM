@@ -14,7 +14,9 @@ get_lm_data(
   id,
   rtime,
   left.open = FALSE,
-  split.data
+  split.data,
+  entry = NULL,
+  entry_mode = c("shared", "strict", "delayed")
 )
 }
 \arguments{
@@ -50,6 +52,14 @@ vice-versa.}
 
 \item{split.data}{List of data split according to ID. Allows for faster
 computation.}
+
+\item{entry}{Optional character string naming subject-specific observation
+entry time. Required when \code{entry_mode} is not \code{"shared"}.}
+
+\item{entry_mode}{Observation-entry rule. \code{"shared"} preserves the original
+behavior, \code{"strict"} requires entry no later than the landmark, and
+\code{"delayed"} permits entry during the prediction window using a
+subject-specific counting-process start.}
 }
 \value{
 A landmark dataset.
@@ -58,7 +68,8 @@ A landmark dataset.
 Build a landmark dataset
 }
 \details{
-This function is based from \code{\link[dynpred:cutLM]{dynpred::cutLM()}} with minor changes.
+This function is based on the \code{cutLM()} implementation from the
+archived \code{dynpred} package, with changes.
 The original function was authored by Hein Putter.
 }
 \examples{

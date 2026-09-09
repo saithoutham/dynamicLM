@@ -23,8 +23,15 @@
 #'   vice-versa.
 #' @param split.data List of data split according to ID. Allows for faster
 #'   computation.
+#' @param entry Optional character string naming subject-specific observation
+#'   entry time. Required when `entry_mode` is not `"shared"`.
+#' @param entry_mode Observation-entry rule. `"shared"` preserves the original
+#'   behavior, `"strict"` requires entry no later than the landmark, and
+#'   `"delayed"` permits entry during the prediction window using a
+#'   subject-specific counting-process start.
 #'
-#' @details This function is based from [dynpred::cutLM()] with minor changes.
+#' @details This function is based on the `cutLM()` implementation from the
+#'   archived `dynpred` package, with changes.
 #'   The original function was authored by Hein Putter.
 #' @references
 #'   - van Houwelingen HC, Putter H (2012). Dynamic Prediction in
@@ -49,13 +56,28 @@
 #' @export
 get_lm_data <- function(data, outcome, lm, horizon, covs,
                         format = c("wide", "long"), id, rtime,
-                        left.open = FALSE, split.data) {
+                        left.open = FALSE, split.data, entry = NULL,
+                        entry_mode = c("shared", "strict", "delayed")) {
   format <- match.arg(format)
+  entry_mode <- match.arg(entry_mode)
+  if (entry_mode != "shared") {
+    if (is.null(entry) || length(entry) != 1L || !is.character(entry))
+      stop("argument 'entry' must name one column when entry_mode is not 'shared'")
+    if (!(entry %in% names(data)))
+      stop(paste("Entry column", entry, "is not in the data."))
+    if (!is.numeric(data[[entry]]) || any(!is.finite(data[[entry]])))
+      stop("Observation entry times must be finite numeric values.")
+  }
   if (format == "wide") {
     lmdata <- data
+    assessment_time <- if (entry_mode == "delayed") {
+      pmax(lm, lmdata[[entry]])
+    } else {
+      rep(lm, nrow(lmdata))
+    }
     if (!is.null(covs$varying)) {
       for (col in covs$varying)
-        lmdata[[col]] <- 1 - as.numeric(lmdata[[col]] > lm)
+        lmdata[[col]] <- 1 - as.numeric(lmdata[[col]] > assessment_time)
     }
 
   } else {
@@ -82,7 +104,16 @@ get_lm_data <- function(data, outcome, lm, horizon, covs,
       }
       t.fups <- di[[rtime]]
 
-      idx <- findInterval(lm, c(t.fups, Inf), left.open = left.open)
+      assessment_time <- lm
+      if (entry_mode != "shared") {
+        subject_entries <- unique(di[[entry]])
+        if (length(subject_entries) != 1L || !is.finite(subject_entries))
+          stop("Observation entry must be one finite value per subject.")
+        if (entry_mode == "delayed")
+          assessment_time <- max(lm, subject_entries)
+      }
+
+      idx <- findInterval(assessment_time, c(t.fups, Inf), left.open = left.open)
 
       if (idx != 0) {
         return(di[idx, ])
@@ -98,7 +129,18 @@ get_lm_data <- function(data, outcome, lm, horizon, covs,
     lmdata <- do.call(rbind, lmdata)
   }
 
-  lmdata <- lmdata[lmdata[[outcome$time]] > lm, ]
+  if (entry_mode == "shared") {
+    keep <- lmdata[[outcome$time]] > lm
+    analysis_entry <- rep(lm, nrow(lmdata))
+  } else if (entry_mode == "strict") {
+    keep <- lmdata[[entry]] <= lm & lmdata[[outcome$time]] > lm
+    analysis_entry <- rep(lm, nrow(lmdata))
+  } else {
+    analysis_entry <- pmax(lm, lmdata[[entry]])
+    keep <- lmdata[[entry]] < horizon & lmdata[[outcome$time]] > analysis_entry
+  }
+  lmdata <- lmdata[keep, ]
+  analysis_entry <- analysis_entry[keep]
   if (nrow(lmdata) == 0) {
     warning("Landmark dataset for lm = ", lm, " could not be constructed as no individuals are alive after this point.")
     return(NULL)
@@ -108,10 +150,22 @@ get_lm_data <- function(data, outcome, lm, horizon, covs,
     as.numeric(lmdata[[outcome$time]] <= horizon)
   lmdata[outcome$time] <- pmin(as.vector(lmdata[[outcome$time]]), horizon)
   lmdata$LM <- lm
+  if (entry_mode == "delayed") {
+    lmdata$.LM_entry <- analysis_entry
+    if (any(lmdata$.LM_entry >= lmdata[[outcome$time]]))
+      stop("Internal error: non-positive observation interval after entry filtering.")
+  }
   if (format == "long")
     cols <- match(c(id, outcome$time, outcome$status, "LM", covs$fixed,
-                    covs$varying, rtime), names(lmdata))
+                    covs$varying, rtime,
+                    if (entry_mode != "shared") entry,
+                    if (entry_mode == "delayed") ".LM_entry"),
+                  names(lmdata))
   else cols <- match(c(outcome$time, outcome$status, "LM", covs$fixed,
-                       covs$varying), names(lmdata))
+                       covs$varying,
+                       if (entry_mode != "shared") entry,
+                       if (entry_mode == "delayed") ".LM_entry"),
+                     names(lmdata))
+  cols <- unique(cols[!is.na(cols)])
   return(lmdata[, cols])
 }

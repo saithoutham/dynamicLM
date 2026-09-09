@@ -449,7 +449,8 @@ check_penlm_inputs <- function(x, y, id_col = NULL, alpha = 1, CV = FALSE) {
 
   ### create x and y for glmnet ###
 
-  entry <- lmdata$data[[lmdata$lm_col]]
+  entry_col <- if (is.null(lmdata$entry_col)) lmdata$lm_col else lmdata$entry_col
+  entry <- lmdata$data[[entry_col]]
   exit <- lmdata$data[[lmdata$outcome$time]]
   status <- lmdata$data[[lmdata$outcome$status]]
   y <- prodlim::Hist(exit, status, entry)
@@ -459,7 +460,7 @@ check_penlm_inputs <- function(x, y, id_col = NULL, alpha = 1, CV = FALSE) {
       xcols <- lmdata$all_covs
     } else {
       all_cols <- colnames(lmdata$data)
-      target_cols <- c(lmdata$lm_col, lmdata$outcome$time,
+      target_cols <- c(lmdata$lm_col, entry_col, lmdata$outcome$time,
                       lmdata$outcome$status, id_col)
       idx <- all_cols %in% target_cols
       xcols <- all_cols[!idx]

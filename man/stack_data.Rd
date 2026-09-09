@@ -13,7 +13,9 @@ stack_data(
   format = c("wide", "long"),
   id,
   rtime,
-  left.open = FALSE
+  left.open = FALSE,
+  entry = NULL,
+  entry_mode = c("shared", "strict", "delayed")
 )
 }
 \arguments{
@@ -49,6 +51,14 @@ only needed if format = "long".}
 \item{left.open}{Boolean (default = FALSE), indicating if the intervals for
 the time-varying covariates are open on the left (and closed on the right)
 or vice-versa.}
+
+\item{entry}{Optional character string naming subject-specific observation
+entry time. Required for age-scale or other staggered-entry analyses.}
+
+\item{entry_mode}{Observation-entry rule. \code{"shared"} is the backward-
+compatible default. \code{"strict"} includes only subjects observed at the
+landmark. \code{"delayed"} also includes subjects first observed during the
+prediction window and stores their analysis start in \code{.LM_entry}.}
 }
 \value{
 An object of class "LMdataframe". This the following components:
