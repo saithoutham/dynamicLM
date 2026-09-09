@@ -5,7 +5,7 @@ an executable test and a `results/trace.csv` reference.
 
 ## IDEA-001: Correlation-aware time-scale selection
 
-Date/commit: 2026-09-08 / `67eb695`
+Date/commit: 2026-09-09 / `700fcc2`
 
 Hypothesis (falsifiable): A correlation-aware summary delta-AUC test can select
 the data-generating time scale with useful power while controlling type-I error.
@@ -15,7 +15,9 @@ pre-specified diagnostic using the package's own inferential framework.
 
 Test performed: Compared naive and strict summary AUC with subject-paired
 bootstrap resamples across landmarks in 1,000 independently seeded datasets per
-entry-spread condition.
+entry-spread condition. Phase 6 then re-audited strict-target AUC bias under
+independent, measured covariate-dependent, and shared-frailty entry using the
+oracle generating score.
 
 Result (with numbers + trace refs): At entry-age SD 4 and 10, rejection
 probabilities were 0.045 (MCSE 0.00656) and 0.046 (MCSE 0.00662), respectively;
@@ -25,14 +27,20 @@ mean delta AUCs were 0.000273 and 0.000425 [TRACE:
 `::diagnostic_entry_sd_10_rejection_probability`,
 `::diagnostic_entry_sd_10_rejection_mcse`,
 `::diagnostic_entry_sd_4_mean_delta_auc`,
-`::diagnostic_entry_sd_10_mean_delta_auc`].
+`::diagnostic_entry_sd_10_mean_delta_auc`]. Under wide measured entry at gamma
+`-4`, naive and strict AUC biases were 0.020885 and -0.000816, whereas the
+original independent-entry test remained null [TRACE:
+`07_informative_entry::auc_cell_003_naive_bias`,
+`::auc_cell_003_strict_bias`].
 
 Verdict: KILL
 
-Reasoning: In this prespecified independent-entry DGP, the wrong eligibility
-rule barely changed discrimination. The test behaved like a level test, not a
-diagnostic with power to identify the wrong time origin. Delta AUC must not be
-used as a general time-scale selector.
+Reasoning: The selector can separate methods in a strong measured-entry
+mechanism, but that does not make it general: the same eligibility defect was
+invisible under independent entry, frailty can preserve oracle ranking while
+breaking coefficient estimation, and delayed entry changes the target
+population. Delta AUC must not choose a scientific time origin. Direct
+eligibility auditing is retained instead.
 
 ## IDEA-002: Survey-weighted landmark supermodels
 
@@ -140,7 +148,7 @@ Reasoning: Build only after the corrected estimand and data contract are stable.
 
 ## IDEA-006: Entry-risk-set shape diagnostic
 
-Date/commit: 2026-09-08 / `49928e4`
+Date/commit: 2026-09-09 / `700fcc2`
 
 Hypothesis (falsifiable): Reporting entries, exits, and eligible counts by
 landmark detects age-scale misuse more reliably than checking for monotone risk
@@ -150,17 +158,33 @@ Why it might matter: The current shared-origin mental model treats increasing
 risk-set counts as suspicious even when they may be valid on attained age.
 
 Test performed: Tabulated unmodified, strict, and delayed eligible counts across
-age landmarks in PBC and NAFLD; separately counted complete pre-entry rows.
+age landmarks in PBC and NAFLD; separately counted complete pre-entry rows. In
+Phase 6, repeated the pre-entry fraction, entry--covariate correlation, and
+naive-versus-pre-entry covariate-distribution tests in 1,000 independently
+seeded datasets for each independent, covariate-dependent, and frailty-dependent
+entry mechanism.
 
 Result (with numbers + trace refs): At age 50, the unmodified NAFLD stack had
 9,472 rows, of which 7,170 were pre-entry and 2,976 pre-entry rows remained
 analyzable [TRACE: `03_break_diagnosis::nafld_lm50_stacked_n`,
-`::nafld_lm50_preentry_n`, `::nafld_lm50_analyzable_preentry_n`].
+`::nafld_lm50_preentry_n`, `::nafld_lm50_analyzable_preentry_n`]. In Phase 6,
+structural detection was 1.000 for the wide-entry gamma-zero control as well as
+the strongest measured informative-entry condition. At wide entry spread, the
+observed-covariate correlation test detected gamma `-4` with probability 1.000
+but detected shared frailty entry with probability only 0.065 [TRACE:
+`07_informative_entry::diagnostic_cell_012_lm1_structural_detection_probability`,
+`::diagnostic_cell_003_lm1_structural_detection_probability`,
+`::diagnostic_cell_003_lm1_entry_x_detection_probability`,
+`::diagnostic_cell_021_lm1_entry_x_detection_probability`].
 
 Verdict: KEEP
 
 Reasoning: The diagnostic exposed silent misuse even though the naive risk-set
-counts decreased monotonically. It belongs in every age-scale run.
+counts decreased monotonically. It belongs in every age-scale run as a
+**structural eligibility audit**. It does not identify whether entry is
+informative: pre-entry rows also occur under independent entry, observed
+covariates miss unmeasured frailty, and conditioning on survival to entry can
+induce entry--covariate association.
 
 ## IDEA-007: Entry-conditional censoring ratios
 
@@ -312,3 +336,95 @@ Verdict: KEEP
 Reasoning: It matched the reference to a tolerance far below the Monte Carlo
 precision and made the mandated grid feasible. It remains deliberately limited
 to the one-covariate validation DGP.
+
+## IDEA-013: Observed entry--covariate correlation as a general screen
+
+Date/commit: 2026-09-09 / `700fcc2`
+
+Hypothesis (falsifiable): Testing entry age against modeled covariates detects
+informative entry while controlling false positives under independent entry.
+
+Why it might matter: Unlike prediction performance, it interrogates the entry
+mechanism directly and is inexpensive to run before model fitting.
+
+Test performed: In each of 1,000 seeded datasets per mechanism and entry spread,
+tested the observed entry--`X` correlation and compared the disjoint pre-entry
+and strict risk-set `X` distributions at every landmark.
+
+Result (with numbers + trace refs): At entry SD 10, the correlation screen's
+detection probability was 0.156 even for gamma `0`, 1.000 for gamma `-4`, and
+0.065 for shared-frailty entry (`theta = 0.5`, `delta = -2`). The corresponding
+frailty risk-set-shift detection probability was 0.049 [TRACE:
+`07_informative_entry::diagnostic_cell_012_lm1_entry_x_detection_probability`,
+`::diagnostic_cell_003_lm1_entry_x_detection_probability`,
+`::diagnostic_cell_021_lm1_entry_x_detection_probability`,
+`::diagnostic_cell_021_lm1_any_riskset_shift_detection_probability`].
+
+Verdict: KILL
+
+Reasoning: It is useful evidence when it fires strongly for measured entry, but
+it is neither a calibrated general test after survival-to-entry selection nor
+sensitive to unmeasured causes. It must not be sold as an informative-entry
+diagnostic.
+
+## IDEA-014: Eligibility correction under measured informative entry
+
+Date/commit: 2026-09-09 / `700fcc2`
+
+Hypothesis (falsifiable): When entry depends on modeled `X` but is conditionally
+independent of failure, strict and delayed eligibility remove the naive
+coefficient bias.
+
+Why it might matter: This is the mechanism in which an EHR analyst can measure
+and adjust the variable driving differential presentation.
+
+Test performed: Swept gamma over `0`, `-1`, `-2`, and `-4`, then confirmed the
+largest naive-versus-strict separation over the complete 108-cell Phase 4 grid,
+with 1,000 replicates and three methods in every cell.
+
+Result (with numbers + trace refs): At gamma `-4`, pooled full-grid bias was
+0.043250 for naive eligibility, 0.001762 for strict eligibility, and 0.002134
+for delayed eligibility. Corresponding coverage was 0.92494, 0.94370, and
+0.94464 [TRACE: `07_informative_entry::pooled_confirmation_naive_bias`,
+`::pooled_confirmation_naive_coverage`,
+`::pooled_confirmation_strict_bias`,
+`::pooled_confirmation_strict_coverage`,
+`::pooled_confirmation_delayed_bias`, and
+`::pooled_confirmation_delayed_coverage`].
+
+Verdict: KEEP
+
+Reasoning: The correction removed most measured-entry bias throughout a large
+known-truth grid. This is empirical evidence, not a general consistency proof,
+and it does not license claims under unmeasured dependent truncation.
+
+## IDEA-015: Eligibility correction is sufficient under shared frailty
+
+Date/commit: 2026-09-09 / `700fcc2`
+
+Hypothesis (falsifiable): Correct risk-set eligibility alone restores unbiased
+coefficient estimation when an unmeasured frailty drives both entry and failure.
+
+Why it might matter: If true, the code patch would be enough for EHR cohorts
+even when presentation depends on latent health.
+
+Test performed: Crossed `theta` in `{0, 0.5}` and `delta` in `{0, -2}` over all
+three entry spreads, with 1,000 replicates and naive, strict, and delayed fits.
+
+Result (with numbers + trace refs): With `theta = 0.5` and `delta = -2`, pooled
+bias was -0.054841, -0.052436, and -0.053453 for naive, strict, and delayed
+fits; coverage was 0.9187, 0.9197, and 0.9207 [TRACE:
+`07_informative_entry::pooled_frailty_theta_0p5_delta_m2_naive_bias`,
+`::pooled_frailty_theta_0p5_delta_m2_naive_coverage`,
+`::pooled_frailty_theta_0p5_delta_m2_strict_bias`,
+`::pooled_frailty_theta_0p5_delta_m2_strict_coverage`,
+`::pooled_frailty_theta_0p5_delta_m2_delayed_bias`, and
+`::pooled_frailty_theta_0p5_delta_m2_delayed_coverage`].
+
+Verdict: KILL
+
+Reasoning: All methods failed similarly. Because `theta > 0` also makes the
+one-covariate model a marginal frailty mixture, this experiment cannot isolate
+dependent truncation from omitted-variable model misspecification. It does
+establish that eligibility correction alone is not sufficient for this stress
+test.
