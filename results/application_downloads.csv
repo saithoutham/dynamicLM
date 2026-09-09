@@ -1,0 +1,4 @@
+file,url,success,bytes,md5,runtime_seconds,local_path
+NHANES_1999_2000_MORT_2019_PUBLIC.dat,https://ftp.cdc.gov/pub/Health_Statistics/NCHS/datalinkage/linked_mortality/NHANES_1999_2000_MORT_2019_PUBLIC.dat,1,487666,266ee0f3bcff8d8866972e4638127fc4,0,/Users/thout/age-scale-landmark-supermodels/data/public/NHANES_1999_2000_MORT_2019_PUBLIC.dat
+NHANES_1999_2000_DEMO.XPT,https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public/1999/DataFiles/DEMO.XPT,1,11500560,9306d6119a4c0dd03f8d526f353681cd,0.00199999999999978,/Users/thout/age-scale-landmark-supermodels/data/public/NHANES_1999_2000_DEMO.XPT
+NHIS_2018_MORT_2019_PUBLIC.dat,https://ftp.cdc.gov/pub/Health_Statistics/NCHS/datalinkage/linked_mortality/NHIS_2018_MORT_2019_PUBLIC.dat,1,1330334,fc605ba3056936e5b1485e9fcb371d7e,0,/Users/thout/age-scale-landmark-supermodels/data/public/NHIS_2018_MORT_2019_PUBLIC.dat

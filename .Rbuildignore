@@ -2,6 +2,7 @@
 ^analysis$
 ^reports$
 ^results$
+^data/public$
 ^tools$
 ^INNOVATIONS\.md$
 ^tutorials$

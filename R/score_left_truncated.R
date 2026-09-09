@@ -276,14 +276,15 @@ score_left_truncated <- function(risk, data, time_col, status_col, entry_col,
       p <- summary_point[summary_point$model == m, , drop = FALSE]
       se_auc <- stats::sd(bm$AUC)
       se_brier <- stats::sd(bm$Brier)
-      transform(
-        p,
+      data.frame(
+        model = p$model, AUC = p$AUC, Brier = p$Brier,
         AUC_se = se_auc,
-        AUC_lower = pmax(0, AUC - z * se_auc),
-        AUC_upper = pmin(1, AUC + z * se_auc),
+        AUC_lower = pmax(0, p$AUC - z * se_auc),
+        AUC_upper = pmin(1, p$AUC + z * se_auc),
         Brier_se = se_brier,
-        Brier_lower = pmax(0, Brier - z * se_brier),
-        Brier_upper = pmin(1, Brier + z * se_brier)
+        Brier_lower = pmax(0, p$Brier - z * se_brier),
+        Brier_upper = pmin(1, p$Brier + z * se_brier),
+        stringsAsFactors = FALSE
       )
     }))
     summary_point <- bootstrap_summary

@@ -8,6 +8,7 @@
 .Ruserdata
 
 data-raw/
+data/public/
 example-code/
 post-process-readme.R
 tutorials/tutorial2-recurrence-data.Rmd

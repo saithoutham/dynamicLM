@@ -5,7 +5,7 @@ an executable test and a `results/trace.csv` reference.
 
 ## IDEA-001: Correlation-aware time-scale selection
 
-Date/commit: PENDING
+Date/commit: 2026-09-08 / PENDING simulation commit
 
 Hypothesis (falsifiable): A correlation-aware summary delta-AUC test can select
 the data-generating time scale with useful power while controlling type-I error.
@@ -13,18 +13,30 @@ the data-generating time scale with useful power while controlling type-I error.
 Why it might matter: It would turn a scientific choice of time origin into a
 pre-specified diagnostic using the package's own inferential framework.
 
-Test performed: PENDING
+Test performed: Compared naive and strict summary AUC with subject-paired
+bootstrap resamples across landmarks in 1,000 independently seeded datasets per
+entry-spread condition.
 
-Result (with numbers + trace refs): PENDING
+Result (with numbers + trace refs): At entry-age SD 4 and 10, rejection
+probabilities were 0.045 (MCSE 0.00656) and 0.046 (MCSE 0.00662), respectively;
+mean delta AUCs were 0.000273 and 0.000425 [TRACE:
+`05_simulation::diagnostic_entry_sd_4_rejection_probability`,
+`::diagnostic_entry_sd_4_rejection_mcse`,
+`::diagnostic_entry_sd_10_rejection_probability`,
+`::diagnostic_entry_sd_10_rejection_mcse`,
+`::diagnostic_entry_sd_4_mean_delta_auc`,
+`::diagnostic_entry_sd_10_mean_delta_auc`].
 
-Verdict: PARK
+Verdict: KILL
 
-Reasoning: Awaiting the simulation harness and a validated left-truncation-aware
-variance calculation.
+Reasoning: In this prespecified independent-entry DGP, the wrong eligibility
+rule barely changed discrimination. The test behaved like a level test, not a
+diagnostic with power to identify the wrong time origin. Delta AUC must not be
+used as a general time-scale selector.
 
 ## IDEA-002: Survey-weighted landmark supermodels
 
-Date/commit: PENDING
+Date/commit: 2026-09-08 / PENDING application commit
 
 Hypothesis (falsifiable): A design-weighted estimator with PSU/stratum-aware
 variance changes inference relative to an unweighted landmark analysis in a
@@ -33,18 +45,29 @@ public linked-mortality cohort.
 Why it might matter: National survey inference requires respecting unequal
 selection probabilities and complex sampling.
 
-Test performed: PENDING
+Test performed: Linked the public-use NHANES 1999--2000 examination file to its
+public-use mortality file, constructed strict and delayed age-scale stacks, and
+compared subject-clustered `coxph()` with a nested PSU/participant
+`survey::svycoxph()` using MEC examination weights and survey strata.
 
-Result (with numbers + trace refs): PENDING
+Result (with numbers + trace refs): In the strict stack the unweighted male
+coefficient was 0.525765 (SE 0.086943), versus 0.481217 (SE 0.075297) under the
+survey design [TRACE:
+`06_application::nhanes_1999_2000_strict_coxph_cluster_1_male_estimate`,
+`::nhanes_1999_2000_strict_coxph_cluster_1_male_standard_error`,
+`::nhanes_1999_2000_strict_svycoxph_1_male_estimate`,
+`::nhanes_1999_2000_strict_svycoxph_1_male_standard_error`].
 
 Verdict: PARK
 
-Reasoning: Requires a verified public linked-mortality download and a clearly
-defined estimand; survey weights must not be bolted onto the existing IID code.
+Reasoning: The machinery runs and weighting changes the empirical estimate, but
+this is not a proof that ordinary survey Cox variance remains valid for an
+overlapping landmark stack. A design-based summary-AUC/Brier estimand and its
+influence function are still PENDING, so the idea is not promoted.
 
 ## IDEA-003: Covariate staleness adjustment
 
-Date/commit: PENDING
+Date/commit: 2026-09-08 / PENDING application commit
 
 Hypothesis (falsifiable): Adding time since last measurement improves summary
 AUC or Brier score under informative visit timing without harming calibration.
@@ -52,17 +75,26 @@ AUC or Brier score under informative visit timing without harming calibration.
 Why it might matter: Last-observation-carried-forward quality depends on how old
 the carried value is, and staleness may vary by age.
 
-Test performed: PENDING
+Test performed: Added time since last measurement to five-fold
+subject-disjoint landmark Cox fits in NAFLD and PBC, then compared out-of-fold
+summary AUC with paired subject bootstraps across landmarks.
 
-Result (with numbers + trace refs): PENDING
+Result (with numbers + trace refs): Delta AUC was 0.003890 (bootstrap SE
+0.012467; p=0.7550) in NAFLD and -0.002384 (SE 0.013043; p=0.8550) in PBC
+[TRACE: `06_application::nafld_staleness_delta_auc`,
+`::nafld_staleness_bootstrap_se`, `::nafld_staleness_p_value`,
+`::pbcseq_staleness_delta_auc`, `::pbcseq_staleness_bootstrap_se`,
+`::pbcseq_staleness_p_value`].
 
-Verdict: PARK
+Verdict: KILL
 
-Reasoning: Awaiting the PBC and NAFLD application datasets.
+Reasoning: The simple additive staleness term showed no useful discrimination
+gain in either public-data test. This kills the proposed off-the-shelf fix, not
+the broader possibility that visit timing contains outcome information.
 
 ## IDEA-004: Inverse-intensity visit weighting
 
-Date/commit: PENDING
+Date/commit: 2026-09-08 / PENDING application commit
 
 Hypothesis (falsifiable): Estimated inverse visit-intensity weights reduce bias
 from informative observation times more than a staleness covariate alone.
@@ -70,13 +102,23 @@ from informative observation times more than a staleness covariate alone.
 Why it might matter: Visit timing can be outcome-related and distort covariate
 availability.
 
-Test performed: PENDING
+Test performed: Estimated a Poisson visit-rate approximation in each training
+fold from sex, entry age, and landmark, capped inverse predicted-rate weights at
+the training-fold 99th percentile, normalized them to mean one, and evaluated
+weighted landmark Cox fits out of fold.
 
-Result (with numbers + trace refs): PENDING
+Result (with numbers + trace refs): Delta AUC was -0.022056 (bootstrap SE
+0.012824; p=0.08545) in NAFLD and 0.001217 (SE 0.002319; p=0.5997) in PBC
+[TRACE: `06_application::nafld_iiw_delta_auc`,
+`::nafld_iiw_bootstrap_se`, `::nafld_iiw_p_value`,
+`::pbcseq_iiw_delta_auc`, `::pbcseq_iiw_bootstrap_se`,
+`::pbcseq_iiw_p_value`].
 
-Verdict: PARK
+Verdict: KILL
 
-Reasoning: This added complexity must beat the simpler staleness adjustment.
+Reasoning: The approximation did not improve PBC and moved NAFLD AUC in the
+wrong direction. A properly specified recurrent-event intensity model could be
+revisited, but this landmark-row approximation should not ship.
 
 ## IDEA-005: Trajectory-model evaluation harness
 
@@ -217,3 +259,56 @@ Verdict: KILL
 
 Reasoning: NA masking is dataset-dependent and historical measurements defeat
 it. Eligibility must be explicit.
+
+## IDEA-011: Paired subject bootstrap as an immediate IF substitute
+
+Date/commit: 2026-09-08 / PENDING simulation commit
+
+Hypothesis (falsifiable): A subject bootstrap shared across landmarks provides
+near-nominal summary-AUC coverage over the entry-heterogeneity stress test.
+
+Why it might matter: It would permit honest inference while the analytic
+left-truncation influence function remains open.
+
+Test performed: Used 100 paired bootstrap resamples in each of 1,000 outer
+datasets at each of three entry-age spreads, for naive and strict eligibility.
+
+Result (with numbers + trace refs): Strict coverage was 0.932, 0.940, and 0.954
+as entry-age SD increased; corresponding MCSEs were 0.00796, 0.00751, and
+0.00662 [TRACE: `05_simulation::auc_entry_sd_0p25_strict_coverage`,
+`::auc_entry_sd_4_strict_coverage`, `::auc_entry_sd_10_strict_coverage`,
+`::auc_entry_sd_0p25_strict_coverage_mcse`,
+`::auc_entry_sd_4_strict_coverage_mcse`,
+`::auc_entry_sd_10_strict_coverage_mcse`].
+
+Verdict: PARK
+
+Reasoning: Coverage was not uniformly nominal and was low in the near-shared
+condition. The bootstrap is exposed as empirical inference, not endorsed as a
+drop-in theoretical correction.
+
+## IDEA-012: Validated scalar Cox engine for large method grids
+
+Date/commit: 2026-09-08 / PENDING simulation commit
+
+Hypothesis (falsifiable): A direct Breslow score/Newton solver with cluster
+sandwich variance can reproduce `coxph()` closely enough to run the full grid.
+
+Why it might matter: Repeated general-purpose formula parsing would dominate
+the required 324,000 fits.
+
+Test performed: Compared coefficient and robust SE outputs with `coxph()` for
+naive, strict, and delayed stacks, then required every Newton score residual to
+be near zero.
+
+Result (with numbers + trace refs): Maximum coefficient and robust-SE
+differences were 1.1709017e-09 and 6.8008849e-11; all 324,000 grid fits
+converged [TRACE: `05_simulation::engine_validation_max_estimate_difference`,
+`::engine_validation_max_robust_se_difference`,
+`::total_model_fits`, `::fit_failures`].
+
+Verdict: KEEP
+
+Reasoning: It matched the reference to a tolerance far below the Monte Carlo
+precision and made the mandated grid feasible. It remains deliberately limited
+to the one-covariate validation DGP.

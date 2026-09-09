@@ -1,0 +1,4 @@
+component,severity,condition
+pbcseq_age_w10_bootstrap_minimal,error,Fewer than 90% of bootstrap resamples were evaluable: 49/100; Fast censoring product-limit estimate reached zero. | AUC requires cases and controls.
+pbcseq:staleness:bootstrap,warning,7 resamples failed: AUC requires cases and controls.
+pbcseq:iiw:bootstrap,warning,6 resamples failed: AUC requires cases and controls.

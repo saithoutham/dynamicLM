@@ -60,7 +60,14 @@ trace_values <- function(report, labels, values, units, script, function_name,
   if (length(source_type) == 1L) source_type <- rep(source_type, length(values))
   if (length(source) == 1L) source <- rep(source, length(values))
   if (length(notes) == 1L) notes <- rep(notes, length(values))
-  if (is.na(seed)) seed_text <- "NA (deterministic)" else seed_text <- as.character(assert_single_seed(seed))
+  if (is.character(seed)) {
+    stopifnot(length(seed) == 1L, nzchar(seed))
+    seed_text <- seed
+  } else if (is.na(seed)) {
+    seed_text <- "NA (deterministic)"
+  } else {
+    seed_text <- as.character(assert_single_seed(seed))
+  }
 
   existing <- utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
   stamp <- format(Sys.time(), tz = "UTC", usetz = TRUE)
