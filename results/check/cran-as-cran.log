@@ -1,0 +1,19 @@
+* using log directory ‘/Users/thout/age-scale-landmark-supermodels/..Rcheck’
+* using R version 4.5.2 (2025-10-31)
+* using platform: aarch64-apple-darwin20
+* R was compiled by
+    Apple clang version 16.0.0 (clang-1600.0.26.6)
+    GNU Fortran (GCC) 14.2.0
+* running under: macOS Sequoia 15.7.8
+* using session charset: UTF-8
+* using options ‘--no-manual --as-cran’
+* checking for file ‘./DESCRIPTION’ ... ERROR
+Required field missing or empty:
+  ‘Author’
+* DONE
+
+Status: 1 ERROR
+See
+  ‘/Users/thout/age-scale-landmark-supermodels/..Rcheck/00check.log’
+for details.
+

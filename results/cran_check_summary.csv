@@ -1,0 +1,3 @@
+check,command,exit_code,errors,warnings,notes,runtime_seconds,status,log
+source_directory_procedural_attempt,"_R_CHECK_CRAN_INCOMING_=TRUE _R_CHECK_FORCE_SUGGESTS_=false R CMD check --as-cran --no-manual .",1,1,0,0,PENDING,"ERROR: Required field missing or empty: Author; superseded by the correct tarball workflow",results/check/cran-as-cran.log
+source_tarball,"_R_CHECK_CRAN_INCOMING_=TRUE _R_CHECK_FORCE_SUGGESTS_=false R CMD check --as-cran --no-manual dynamicLM_1.0.0.tar.gz",0,0,1,5,624,"DONE: 1 WARNING, 5 NOTEs",results/check/cran-tarball-as-cran.log

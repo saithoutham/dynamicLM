@@ -9,32 +9,137 @@ generate_entry_age <- function(n, mean_age, sd_age, lower, upper) {
 }
 
 
+generate_conditional_entry_age <- function(mean_age, sd_age, lower, upper) {
+  n <- length(mean_age)
+  stopifnot(n > 0L, all(is.finite(mean_age)), length(sd_age) == 1L,
+            is.finite(sd_age), sd_age > 0, lower < upper)
+  z_lower <- (lower - mean_age) / sd_age
+  z_upper <- (upper - mean_age) / sd_age
+  uniform <- stats::runif(n)
+  log_add <- function(a, b) {
+    maximum <- pmax(a, b)
+    maximum + log(exp(a - maximum) + exp(b - maximum))
+  }
+  log_subtract <- function(a, b) {
+    stopifnot(all(a >= b))
+    a + log1p(-exp(b - a))
+  }
+  z <- numeric(n)
+  left_tail <- z_upper < 0
+  right_tail <- z_lower > 0
+  middle <- !(left_tail | right_tail)
+  if (any(left_tail)) {
+    log_lower <- stats::pnorm(z_lower[left_tail], log.p = TRUE)
+    log_upper <- stats::pnorm(z_upper[left_tail], log.p = TRUE)
+    log_width <- log_subtract(log_upper, log_lower)
+    log_probability <- log_add(
+      log_lower, log(uniform[left_tail]) + log_width
+    )
+    z[left_tail] <- stats::qnorm(log_probability, log.p = TRUE)
+  }
+  if (any(right_tail)) {
+    log_survival_upper <- stats::pnorm(
+      z_upper[right_tail], lower.tail = FALSE, log.p = TRUE
+    )
+    log_survival_lower <- stats::pnorm(
+      z_lower[right_tail], lower.tail = FALSE, log.p = TRUE
+    )
+    log_width <- log_subtract(log_survival_lower, log_survival_upper)
+    log_survival <- log_add(
+      log_survival_upper, log(uniform[right_tail]) + log_width
+    )
+    z[right_tail] <- stats::qnorm(
+      log_survival, lower.tail = FALSE, log.p = TRUE
+    )
+  }
+  if (any(middle)) {
+    lower_probability <- stats::pnorm(z_lower[middle])
+    upper_probability <- stats::pnorm(z_upper[middle])
+    probability <- lower_probability + uniform[middle] *
+      (upper_probability - lower_probability)
+    z[middle] <- stats::qnorm(probability)
+  }
+  out <- mean_age + sd_age * z
+  upper_inside <- upper - .Machine$double.eps * max(1, abs(upper))
+  out <- pmax(lower, pmin(upper_inside, out))
+  stopifnot(length(out) == n, all(is.finite(out)),
+            all(out >= lower), all(out < upper))
+  out
+}
+
+
 generate_left_truncated_cohort <- function(n, beta, lambda0, entry_mean,
-                                           entry_sd, study_end) {
+                                           entry_sd, study_end, gamma = 0,
+                                           theta = 0, delta = 0) {
   stopifnot(n > 0L, is.finite(beta), lambda0 > 0, entry_sd > 0,
-            study_end > entry_mean)
+            study_end > entry_mean, length(gamma) == 1L, is.finite(gamma),
+            length(theta) == 1L, is.finite(theta), length(delta) == 1L,
+            is.finite(delta))
+
+  # This branch is intentionally the Phase 4 implementation verbatim.  It is
+  # also an RNG contract: default arguments consume the same random numbers in
+  # the same order, which analysis/07_informative_entry.R checks against every
+  # stored Phase 4 seed and result.
+  if (gamma == 0 && theta == 0 && delta == 0) {
+    accepted <- list()
+    accepted_n <- 0L
+    while (accepted_n < n) {
+      batch_n <- max(500L, 2L * (n - accepted_n))
+      entry <- generate_entry_age(batch_n, entry_mean, entry_sd,
+                                  lower = 25, upper = study_end - 1e-6)
+      x <- stats::rnorm(batch_n)
+      event_age <- stats::rexp(batch_n, rate = lambda0 * exp(beta * x))
+      keep <- event_age > entry
+      if (any(keep)) {
+        accepted[[length(accepted) + 1L]] <- data.frame(
+          entry = entry[keep], x = x[keep], event_age = event_age[keep]
+        )
+        accepted_n <- accepted_n + sum(keep)
+      }
+    }
+    out <- do.call(rbind, accepted)
+    out <- out[seq_len(n), , drop = FALSE]
+    out$id <- seq_len(n)
+    out <- out[, c("id", "entry", "x", "event_age")]
+    stopifnot(nrow(out) == n, !anyNA(out), all(out$event_age > out$entry),
+              all(out$entry < study_end), !anyDuplicated(out$id))
+    return(out)
+  }
+
   accepted <- list()
   accepted_n <- 0L
   while (accepted_n < n) {
     batch_n <- max(500L, 2L * (n - accepted_n))
-    entry <- generate_entry_age(batch_n, entry_mean, entry_sd,
-                                lower = 25, upper = study_end - 1e-6)
     x <- stats::rnorm(batch_n)
-    event_age <- stats::rexp(batch_n, rate = lambda0 * exp(beta * x))
+    use_frailty <- theta != 0 || delta != 0
+    u <- if (use_frailty) stats::rnorm(batch_n) else rep(0, batch_n)
+    conditional_mean <- entry_mean + gamma * x + delta * u
+    entry <- generate_conditional_entry_age(
+      conditional_mean, entry_sd, lower = 25, upper = study_end - 1e-6
+    )
+    linear_predictor <- beta * x + theta * u
+    if (any(!is.finite(linear_predictor)) || max(linear_predictor) > 700)
+      stop("Non-finite or overflowing generating linear predictor.")
+    event_age <- stats::rexp(batch_n, rate = lambda0 * exp(linear_predictor))
     keep <- event_age > entry
     if (any(keep)) {
-      accepted[[length(accepted) + 1L]] <- data.frame(
+      piece <- data.frame(
         entry = entry[keep], x = x[keep], event_age = event_age[keep]
       )
+      if (use_frailty) piece$u <- u[keep]
+      accepted[[length(accepted) + 1L]] <- piece
       accepted_n <- accepted_n + sum(keep)
     }
   }
   out <- do.call(rbind, accepted)
   out <- out[seq_len(n), , drop = FALSE]
   out$id <- seq_len(n)
-  out <- out[, c("id", "entry", "x", "event_age")]
+  columns <- c("id", "entry", "x", if ("u" %in% names(out)) "u",
+               "event_age")
+  out <- out[, columns, drop = FALSE]
   stopifnot(nrow(out) == n, !anyNA(out), all(out$event_age > out$entry),
             all(out$entry < study_end), !anyDuplicated(out$id))
+  if ("u" %in% names(out)) stopifnot(all(is.finite(out$u)))
   out
 }
 
@@ -74,7 +179,8 @@ make_simulation_stack <- function(data, landmarks, w,
       keep <- data$entry < horizon & data$exit > pmax(landmark, data$entry)
       start <- pmax(landmark, data$entry[keep])
     }
-    out <- data[keep, c("id", "x"), drop = FALSE]
+    stack_columns <- c("id", "x", if ("u" %in% names(data)) "u")
+    out <- data[keep, stack_columns, drop = FALSE]
     out$landmark <- landmark
     out$start <- start
     out$stop <- pmin(data$exit[keep], horizon)
