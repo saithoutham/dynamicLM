@@ -426,7 +426,7 @@ design decision.
 
 All data used here are public. The implementation and analysis are available
 on the `age-scale` branch of `github.com/saithoutham/dynamicLM`. The Phase 7
-analysis commit is `[COMMIT: PENDING UNTIL FINAL PHASE 7 COMMIT]`. Cell-level
+analysis commit is `df22725`. Cell-level
 seed manifests and `results/trace.csv` provide deterministic inputs and
 number-level provenance. Large regenerateable raw result tables are governed by
 the verified policy documented in `INNOVATIONS.md` and `README.md`.

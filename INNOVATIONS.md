@@ -445,7 +445,7 @@ dependent-entry mechanisms.
 
 ## IDEA-016: Manifest-regenerated raw result artifacts
 
-Date/commit: 2026-09-09 / `PENDING`
+Date/commit: 2026-09-09 / `df22725`
 
 Hypothesis (falsifiable): The two tracked result files above 25 MB can be
 removed without losing a reproducible inferential artifact if a clean
