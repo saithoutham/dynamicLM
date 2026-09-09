@@ -1,7 +1,14 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^LICENSE\.md$
+^README\.Rmd$
+^data-raw$
+^example_code/*$
 ^\.here$
 ^analysis$
 ^reports$
 ^results$
+^manuscript$
 ^data/public$
 ^tools$
 ^INNOVATIONS\.md$

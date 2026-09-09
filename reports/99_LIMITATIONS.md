@@ -31,12 +31,26 @@ correct outside the separately validated scalar setting.
 
 ## The frailty experiment is deliberately confounded
 
-Regime C makes `U` affect both event risk and, when `delta != 0`, entry. The
-fitted coefficient model omits `U`. Consequently, its bias can reflect marginal
-frailty mixing, selection through entry, or both. Similar bias when `delta = 0`
-and `delta = -2` means the experiment cannot identify a dependent-truncation
-increment. It supports only the narrower conclusion that eligibility correction
-alone is insufficient under this shared-frailty stress test.
+> **Superseded interpretation (2026-09-09):** “Similar bias when `delta = 0`
+> and `delta = -2` means the experiment cannot identify a dependent-truncation
+> increment. It supports only the narrower conclusion that eligibility
+> correction alone is insufficient under this shared-frailty stress test.”
+
+**EMPIRICAL-ONLY, revised 2026-09-09:** because Regime C is factorial, its
+replicate-level `delta` contrasts do estimate the increment from adding entry
+dependence on `U` within this simulation. All method-specific `delta` and
+interaction intervals included zero, whereas every `theta` main-effect interval
+excluded zero [TRACE:
+`08_frailty_decomposition::{method}_{contrast}_{contrast_estimate,ci_lower,ci_upper}`].
+Thus the measured coefficient bias is attributable to the omitted hazard
+frailty in this fitted one-covariate model, not to a detected
+dependent-truncation increment.
+
+This sharpens rather than eliminates the limitation. The result covers one
+normal frailty, one entry shift, and one hazard loading. It does not establish
+that dependent truncation is harmless generally. In observed data, `delta` is
+not randomized or known, so this factorial identification is unavailable; the
+structural diagnostic also has low sensitivity to unmeasured entry dependence.
 
 The summary-AUC analysis uses the oracle generating score, including frailty in
 Regime C. That isolates metric construction from fitted-model error but is not
@@ -144,14 +158,23 @@ used; it is not a proof of exact integration.
 
 ## Package and reproducibility limitations
 
-The tarball `R CMD check --as-cran` completed but was not clean: 1 WARNING and
-5 NOTEs [TRACE: `07_informative_entry::cran_check_warnings`,
-`::cran_check_notes`]. Tests passed inside the check, but a data-documentation
-WARNING, packaging/metadata and namespace NOTES, slow examples, and an
-unverifiable current time remain. Passing tests must not be summarized as
-passing CRAN checks.
+The final tarball `R CMD check --as-cran` completed but was not clean: 1 WARNING
+and 3 NOTEs [TRACE: `08_hygiene::cran_age_post_warnings`,
+`::cran_age_post_notes`]. An upstream worktree check produced 1 WARNING and 6
+NOTEs; exact messages and source attribution are in
+`results/check/cran_attribution.csv` [TRACE:
+`08_hygiene::cran_upstream_warnings`, `::cran_upstream_notes`]. The branch's
+two introduced top-level packaging diagnostics were fixed. The remaining
+data-documentation, metadata/URL, visible-global, and slow-example diagnostics
+were inherited and deliberately left unchanged. Passing tests must not be
+summarized as passing CRAN checks.
 
-The large grids are reproducible from explicit seed manifests, but wall time and
-floating-point results can vary by R, BLAS, compiler, and platform. Exact
-Regime A identity is guaranteed only for the recorded environment and compared
-commit. `results/session.txt` records that environment.
+The two raw grid tables were removed from tracking only after fresh
+manifest-driven rebuilds matched both originals byte-for-byte [TRACE:
+`08_hygiene::simulation_raw_byte_identical`,
+`::informative_entry_raw_byte_identical`]. They remain recoverable through
+`analysis/regenerate_raw.R --write` and prior Git history. This does not make
+cross-platform byte identity a promise: wall time and floating-point results
+can vary by R, BLAS, compiler, and platform. Exact Regime A identity is
+guaranteed only for the recorded environment and compared commit.
+`results/session.txt` records that environment.

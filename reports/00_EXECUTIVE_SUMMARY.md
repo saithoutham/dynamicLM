@@ -56,14 +56,20 @@ bias 0.002134 with coverage 0.94464 [TRACE:
 eligibility corrects most measured-entry coefficient bias in the tested DGP;
 it is not a general theorem.
 
-Under shared frailty, eligibility correction was not sufficient. With `theta =
-0.5` and `delta = -2`, pooled coefficient biases were -0.054841, -0.052436, and
--0.053453 for naive, strict, and delayed fits [TRACE:
-`07_informative_entry::pooled_frailty_theta_0p5_delta_m2_naive_bias`,
-`::pooled_frailty_theta_0p5_delta_m2_strict_bias`, and
-`::pooled_frailty_theta_0p5_delta_m2_delayed_bias`]. Because
-frailty also makes the one-covariate fitted model a marginal mixture, the design
-does not isolate dependent truncation from omitted-variable misspecification.
+> **Superseded interpretation (2026-09-09):** “Under shared frailty,
+> eligibility correction was not sufficient. Because frailty also makes the
+> one-covariate fitted model a marginal mixture, the design does not isolate
+> dependent truncation from omitted-variable misspecification.”
+
+**EMPIRICAL-ONLY, revised 2026-09-09:** the factorial `delta` comparison does
+isolate the increment associated with frailty-dependent entry in this design.
+For every method, both `delta`-contrast intervals and the
+`theta`-by-`delta` interaction interval included zero, while both `theta`
+main-effect intervals excluded zero [TRACE:
+`08_frailty_decomposition::{method}_{contrast}_{contrast_estimate,ci_lower,ci_upper}`].
+The measured bias is therefore attributable to including an omitted hazard
+frailty (`theta`), not to the added entry dependence (`delta`). This result does
+not prove that dependent truncation is harmless under other mechanisms.
 
 The entry-risk-set audit reliably exposed structural pre-entry inclusion, and
 observed-covariate tests detected strong Regime B dependence. Those tests were
@@ -108,23 +114,28 @@ estimating-equation argument under explicit conditional-independence,
 positivity, censoring, and overlapping-landmark conditions. The simulations
 support only the mechanisms that were run.
 
-I could not identify dependent truncation from observed data when its common
-cause was unmeasured. Addressing that requires measured proxies, a defensible
-joint entry/failure model, an instrumental or sensitivity-analysis strategy,
-and validation against a setting where the entry mechanism is substantively
-known. The current structural audit cannot supply this information.
+I could not diagnose dependent truncation from observed data when its common
+cause was unmeasured. The simulation factorial identifies the `delta`
+increment because the data-generating mechanism is known; an analyst does not
+observe that contrast. Addressing the observational problem requires measured
+proxies, a defensible joint entry/failure model, an instrumental or
+sensitivity-analysis strategy, and validation where the entry mechanism is
+substantively known. The current structural audit cannot supply this
+information.
 
 I did not establish design-based influence-function inference for the NHANES
 landmark metrics or validate a trajectory encoder; those innovation tracks
 remain `PARK`. They require, respectively, a survey-design estimand/variance
 derivation and a frozen prediction-adapter/data contract before model work.
 
-The CRAN incoming-feasibility check was completed, but the package is not
-CRAN-clean: the tarball check ended with 1 WARNING and 5 NOTEs [TRACE:
-`07_informative_entry::cran_check_warnings`, `::cran_check_notes`]. Resolving
-them requires correcting the `splc` documentation mismatch, metadata/URL and
-namespace diagnostics, top-level packaging exclusions, and slow examples, then
-rerunning the tarball check in an environment able to verify current time.
+The CRAN incoming-feasibility check was completed and attributed against a
+temporary `upstream/main` worktree. Two age-scale packaging diagnostics were
+fixed; the final tarball check ended with 1 WARNING and 3 NOTEs, all inherited
+from upstream [TRACE: `08_hygiene::cran_age_post_warnings`,
+`::cran_age_post_notes`, `::cran_branch_diagnostics_fixed`]. The package is
+still not CRAN-clean. The remaining data-documentation mismatch,
+metadata/URL, visible-global, and slow-example diagnostics belong to the
+upstream package and were deliberately not changed in this contribution.
 
 ## Decision
 

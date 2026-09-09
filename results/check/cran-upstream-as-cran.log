@@ -1,0 +1,167 @@
+* using log directory ‘/private/tmp/dynamiclm-upstream-phase7.VDRn8B/dynamicLM.Rcheck’
+* using R version 4.5.2 (2025-10-31)
+* using platform: aarch64-apple-darwin20
+* R was compiled by
+    Apple clang version 16.0.0 (clang-1600.0.26.6)
+    GNU Fortran (GCC) 14.2.0
+* running under: macOS Sequoia 15.7.8
+* using session charset: UTF-8
+* using options ‘--no-manual --as-cran’
+* checking for file ‘dynamicLM/DESCRIPTION’ ... OK
+* checking extension type ... Package
+* this is package ‘dynamicLM’ version ‘1.0.0’
+* package encoding: UTF-8
+* checking CRAN incoming feasibility ... [3s/21s] NOTE
+Maintainer: ‘Anya Fries <afries@stanford.edu>’
+
+New submission
+
+Found the following (possibly) invalid URLs:
+  URL: https://academic.oup.com/ije/article/52/6/1984/7260912
+    From: README.md
+    Status: 403
+    Message: Forbidden
+  URL: https://cran.r-project.org/web/packages/riskRegression/index.html
+    From: man/CSC.fixed.coefs.Rd
+    Status: 200
+    Message: OK
+    CRAN URL not in canonical form
+  URL: https://stackoverflow.com/a/19370173
+    From: README.md
+    Status: 403
+    Message: Forbidden
+The canonical URL of the CRAN page for a package is 
+  https://CRAN.R-project.org/package=pkgname
+Please use DOIs for the following publisher URLs:
+  https://academic.oup.com/ije/article/52/6/1984/7260912
+
+The Title field should be in title case. Current version is:
+  ‘Dynamic w-year risk predictions from landmark time points’
+In title case that is:
+  ‘Dynamic w-Year Risk Predictions from Landmark Time Points’
+* checking package namespace information ... OK
+* checking package dependencies ... OK
+* checking if this is a source package ... OK
+* checking if there is a namespace ... OK
+* checking for executable files ... OK
+* checking for hidden files and directories ... NOTE
+Found the following hidden files and directories:
+  .git
+These were most likely included in error. See section ‘Package
+structure’ in the ‘Writing R Extensions’ manual.
+
+CRAN-pack does not know about
+  .git
+* checking for portable file names ... OK
+* checking for sufficient/correct file permissions ... OK
+* checking serialization versions ... OK
+* checking whether package ‘dynamicLM’ can be installed ... OK
+* checking installed package size ... OK
+* checking package directory ... OK
+* checking for future file timestamps ... OK
+* checking DESCRIPTION meta-information ... OK
+* checking top-level files ... NOTE
+File
+  LICENSE
+is not mentioned in the DESCRIPTION file.
+Non-standard file/directory found at top level:
+  ‘tutorials’
+* checking for left-over files ... OK
+* checking index information ... OK
+* checking package subdirectories ... OK
+* checking code files for non-ASCII characters ... OK
+* checking R files for syntax errors ... OK
+* checking whether the package can be loaded ... OK
+* checking whether the package can be loaded with stated dependencies ... OK
+* checking whether the package can be unloaded cleanly ... OK
+* checking whether the namespace can be loaded with stated dependencies ... OK
+* checking whether the namespace can be unloaded cleanly ... OK
+* checking use of S3 registration ... OK
+* checking dependencies in R code ... OK
+* checking S3 generic/method consistency ... OK
+* checking replacement functions ... OK
+* checking foreign function calls ... OK
+* checking R code for possible problems ... NOTE
+clean_bootstraps: no visible global function definition for
+  ‘complete.cases’
+clean_bootstraps: no visible binding for global variable ‘..by_columns’
+clean_bootstraps: no visible binding for global variable ‘p’
+clean_bootstraps: no visible binding for global variable ‘se’
+get_pbc_long: no visible binding for global variable ‘id’
+get_pbc_long: no visible binding for global variable ‘sex’
+get_pbc_long: no visible binding for global variable ‘stage’
+get_pbc_long: no visible global function definition for ‘event’
+get_pbc_long: no visible binding for global variable ‘time’
+get_pbc_long: no visible binding for global variable ‘status’
+get_pbc_long: no visible global function definition for ‘tdc’
+get_pbc_long: no visible binding for global variable ‘day’
+get_pbc_long: no visible binding for global variable ‘albumin’
+get_pbc_long: no visible binding for global variable ‘alk.phos’
+get_pbc_long: no visible binding for global variable ‘ascites’
+get_pbc_long: no visible binding for global variable ‘ast’
+get_pbc_long: no visible binding for global variable ‘bili’
+get_pbc_long: no visible binding for global variable ‘edema’
+get_pbc_long: no visible binding for global variable ‘hepato’
+get_pbc_long: no visible binding for global variable ‘platelet’
+get_pbc_long: no visible binding for global variable ‘protime’
+get_pbc_long: no visible binding for global variable ‘spiders’
+summary_metric: no visible binding for global variable ‘delta’
+summary_metric: no visible global function definition for ‘.’
+summary_metric: no visible binding for global variable ‘model’
+summary_metric: no visible binding for global variable ‘reference’
+summary_metric : <anonymous>: no visible binding for global variable
+  ‘ID’
+summary_metric: no visible binding for global variable ‘se’
+summary_metric: no visible binding for global variable ‘bootstrap’
+Undefined global functions or variables:
+  . ..by_columns albumin alk.phos ascites ast bili bootstrap
+  complete.cases day delta edema event hepato id ID model p platelet
+  protime reference se sex spiders stage status tdc time
+Consider adding
+  importFrom("stats", "complete.cases", "time")
+to your NAMESPACE file.
+* checking Rd files ... OK
+* checking Rd metadata ... OK
+* checking Rd line widths ... OK
+* checking Rd cross-references ... NOTE
+Found the following Rd file(s) with Rd \link{} targets missing package
+anchors:
+  plot.cv.pen_lm.Rd: cv.glmnet
+  plot.pen_lm.Rd: glmnet
+  score.Rd: riskRegression
+Please provide package anchors for all Rd \link{} targets not in the
+package itself and the base packages.
+Unknown package ‘dynpred’ in Rd xrefs
+* checking for missing documentation entries ... OK
+* checking for code/documentation mismatches ... WARNING
+Data codoc mismatches from Rd file 'splc.Rd':
+Variables in data frame 'splc'
+  Code: age age.ix bmi chemo.ix cigday event fh hist_AD hist_LC
+        hist_NSCLC_NOS hist_OTH hist_SC hist_SQ ID male packyears ph
+        quityears radiation.ix smkstatus stage.ix surgery.ix T.fup Time
+  Docs: age.ix bmi chemo.ix cigday event fh hist_* ID male packyears ph
+        quityears radiation.ix smkstatus stage.ix surgery.ix T.fup Time
+
+Data codoc mismatches from Rd file 'splc_test.Rd':
+Variables in data frame 'splc_test'
+  Code: age.ix bmi chemo.ix cigday event fh hist_AD hist_LC
+        hist_NSCLC_NOS hist_OTH hist_SC ID LM male packyears ph
+        quityears radiation.ix smkstatus stage.ix surgery.ix Time
+  Docs: age.ix bmi chemo.ix cigday event fh hist_* ID male packyears ph
+        quityears radiation.ix smkstatus stage.ix surgery.ix T.fup Time
+
+* checking Rd \usage sections ... OK
+* checking Rd contents ... OK
+* checking for unstated dependencies in examples ... OK
+* checking contents of ‘data’ directory ... OK
+* checking data for non-ASCII characters ... OK
+* checking LazyData ... OK
+* checking data for ASCII and uncompressed saves ... OK
+* checking examples ... [45s/45s] NOTE
+Examples with CPU (user + system) or elapsed time > 5s
+                       user system elapsed
+dynamic_lm.cv.pen_lm 34.529  0.541  35.078
+* checking for non-standard things in the check directory ... OK
+* checking for detritus in the temp directory ... OK
+* DONE
+Status: 1 WARNING, 6 NOTEs

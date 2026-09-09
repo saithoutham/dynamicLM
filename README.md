@@ -23,6 +23,27 @@ platform-specific workaround. Do not use it on other platforms.
 The original upstream README is retained in `README.Rmd` while the research
 workflow is under construction.
 
+## Reproducible raw simulation artifacts
+
+The two replicate-level tables above 25 MB are intentionally not tracked:
+`results/simulation_raw.csv` and `results/informative_entry_raw.csv`. Before
+removal, both were rebuilt from their committed seed manifests and verified
+byte-for-byte against the originals. The row counts, byte counts, MD5 hashes,
+and equality results are in
+[`raw_regeneration_verification.csv`](results/check/raw_regeneration_verification.csv).
+
+To recreate both tables from a clean checkout without rerunning the analysis
+reports, run:
+
+```sh
+REGENERATE_CORES=8 Rscript analysis/regenerate_raw.R --write
+```
+
+The script refuses to overwrite either raw table. To audit existing tables
+against fresh manifest-driven rebuilds, use `--verify` instead. Phase 7's
+frailty decomposition requires `results/informative_entry_raw.csv`; regenerate
+it first if the table is absent.
+
 ## Reproduce the analyses
 
 After setup, run:
@@ -40,12 +61,14 @@ Rscript analysis/06_application.R
 Rscript analysis/07_informative_entry.R
 Rscript analysis/07_entry_diagnostic.R
 Rscript analysis/07_auc_informative.R
+Rscript analysis/08_frailty_decomposition.R
 ```
 
 The simulation scripts accept `SIM_CORES` to control local parallelism. Phase 6
 also accepts explicit small-run environment switches for development, but the
 committed result artifacts were produced with the required full settings; a
-small run must not be reported as the study result.
+small run must not be reported as the study result. Raw regeneration uses
+`REGENERATE_CORES` and is itself a full manifest replay, not a smoke test.
 
 Run package and project tests with:
 
@@ -65,6 +88,6 @@ _R_CHECK_CRAN_INCOMING_=TRUE _R_CHECK_FORCE_SUGGESTS_=false \
   R CMD check --as-cran --no-manual dynamicLM_1.0.0.tar.gz
 ```
 
-The recorded Phase 6 check completed with non-clean diagnostics; see
-[`cran_check_summary.csv`](results/cran_check_summary.csv) rather than treating
-test success as CRAN readiness.
+The final Phase 7 check completed with inherited non-clean diagnostics. See
+[`cran_attribution.csv`](results/check/cran_attribution.csv) and the preserved
+post-fix log rather than treating test success as CRAN readiness.

@@ -9,15 +9,19 @@ bias was 0.070566, versus -0.000180 for strict eligibility and -0.000697 for
 within-window delayed entry. In the full-factorial confirmation, pooled naive
 bias was 0.043250 and coverage was 0.92494; strict and delayed biases were
 0.001762 and 0.002134, with coverage 0.94370 and 0.94464. With shared unmeasured
-frailty, all methods were biased. The patch therefore corrects observable
-eligibility but does not rescue dependent truncation or an omitted common cause
-of entry and failure [TRACE:
+frailty, all methods were biased, but the Phase 7 factorial decomposition
+attributes the measured increment to `theta`, not `delta`: intervals for all
+three methods' two `delta` contrasts and `theta`-by-`delta` interactions include
+zero, whereas both `theta` contrasts exclude zero. The patch therefore corrects
+observable eligibility; this experiment does not demonstrate an additional
+dependent-truncation failure [TRACE:
 `07_informative_entry::focused_cell_003_naive_bias`,
 `::focused_cell_003_strict_bias`, `::focused_cell_003_delayed_bias`, and
 `::pooled_confirmation_naive_bias`, `::pooled_confirmation_naive_coverage`,
 `::pooled_confirmation_strict_bias`, `::pooled_confirmation_strict_coverage`,
 `::pooled_confirmation_delayed_bias`,
-`::pooled_confirmation_delayed_coverage`].
+`::pooled_confirmation_delayed_coverage`, and
+`08_frailty_decomposition::{method}_{contrast}_{contrast_estimate,ci_lower,ci_upper}`].
 
 ## Why the independent-entry null needs a qualification
 
@@ -158,6 +162,19 @@ The full cell results—not only the pooled summary—remain the inferential rec
 
 ## Shared-frailty limitation
 
+> **Superseded interpretation (2026-09-09):** “The eligibility patch is not
+> sufficient under this shared frailty stress test. This experiment does not
+> isolate dependent truncation: with `theta > 0`, omitting `U` also makes the
+> fitted one-covariate hazard model misspecified through frailty mixing. The
+> similar results for `delta = 0` and `delta = -2` show that the observed bias
+> cannot honestly be attributed solely to informative entry.”
+>
+> **Revision (2026-09-09):** the replicate-level `delta` contrasts do isolate
+> the increment associated with making entry depend on `U` within this
+> factorial design. The original paragraph correctly warned against attributing
+> all bias to entry, but it was too conservative about what the `delta`
+> comparison can identify.
+
 When `theta = 0.5`, all three one-covariate fits were biased regardless of
 whether entry also depended on frailty through `delta`. Pooling the three entry
 spreads:
@@ -178,14 +195,25 @@ spreads:
 | 0.5 | 0 | delayed | -0.051292 | 0.9267 (0.00476) |
 
 All table entries are mapped in `trace.csv` by the label template
-`pooled_frailty_theta_{theta}_delta_{delta}_{method}_{field}`.
+`pooled_frailty_theta_{theta}_delta_{delta}_{method}_{field}`. The formal
+factorial re-analysis is in
+[`08_frailty_decomposition.md`](08_frailty_decomposition.md).
 
-**EMPIRICAL-ONLY:** the eligibility patch is not sufficient under this shared
-frailty stress test. This experiment does not isolate dependent truncation:
-with `theta > 0`, omitting `U` also makes the fitted one-covariate hazard model
-misspecified through frailty mixing. The similar results for `delta = 0` and
-`delta = -2` show that the observed bias cannot honestly be attributed solely
-to informative entry.
+**EMPIRICAL-ONLY:** for naive, strict, and delayed fits, the Monte Carlo
+intervals for the `delta` contrast included zero at `theta = 0` and `theta =
+0.5`, and the `theta`-by-`delta` interaction intervals also included zero. The
+two `theta` main-effect intervals excluded zero for every method [TRACE:
+`08_frailty_decomposition::naive_delta_at_theta_0_estimate`,
+`::naive_delta_at_theta_0p5_estimate`, `::naive_theta_x_delta_estimate`,
+`::strict_delta_at_theta_0_estimate`,
+`::strict_delta_at_theta_0p5_estimate`, `::strict_theta_x_delta_estimate`,
+`::delayed_delta_at_theta_0_estimate`,
+`::delayed_delta_at_theta_0p5_estimate`, and
+`::delayed_theta_x_delta_estimate`, with matching `_ci_low` and `_ci_high`
+fields; the `theta_at_delta_*` fields trace the main effects]. Within this
+design, the observed coefficient bias is driven by including an omitted hazard
+frailty (`theta`), not by the added entry dependence (`delta`). This does not
+prove that dependent truncation is harmless under other mechanisms.
 
 ## Entry-risk-set diagnostic
 
