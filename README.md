@@ -20,6 +20,12 @@ On Apple silicon systems whose R configuration points to absent CRAN Fortran
 libraries, the project includes `tools/Makevars.macos-arm64` as an explicit,
 platform-specific workaround. Do not use it on other platforms.
 
+`analysis/00_setup.R` is an audit, not an installer. It currently reports
+`dynpred` as `PENDING` on the recorded R release; this is non-blocking because
+the audited package source does not import it. Analysis scripts and project
+tests use `devtools::load_all()` on the checkout, so they do not depend on an
+unidentified installed copy of `dynamicLM`.
+
 The original upstream README is retained in `README.Rmd` while the research
 workflow is under construction.
 

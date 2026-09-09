@@ -156,11 +156,17 @@ analysis_runtime <- timed({
   stopifnot(nrow(toy_stack$data) == 2L, identical(correct_ids, 1L),
             identical(pre_entry_ids, 2L))
 
-  wide_error <- capture_condition(stack_data(
+  wide_stack <- stack_data(
     toy[c("id", "exit", "event", "x")], toy_outcome,
     lms = toy_landmark, w = 10, covs = toy_covs, format = "wide", id = "id"
-  ))
-  stopifnot(inherits(wide_error$value, "captured_error"))
+  )
+  stopifnot(
+    inherits(wide_stack, "LMdataframe"),
+    nrow(wide_stack$data) == nrow(toy),
+    all(wide_stack$data$LM == toy_landmark),
+    all(wide_stack$data$exit == toy_landmark + 10),
+    all(wide_stack$data$event == 0L)
+  )
 
   fake_scores <- data.table(
     tLM = c(55, 60), model = "model", AUC = c(0.6, 0.7)
@@ -182,7 +188,10 @@ analysis_runtime <- timed({
     toy_stack = toy_stack$data,
     correct_ids = correct_ids,
     pre_entry_ids = pre_entry_ids,
-    wide_error = as.character(wide_error$value),
+    wide_result = paste0(
+      "SUCCESS: corrected enrollment-scale wide stack returned ",
+      nrow(wide_stack$data), " rows without an entry column."
+    ),
     summary_error = as.character(summary_error$value)
   )
 })
@@ -197,9 +206,23 @@ utils::write.csv(out$events, project_path("results", "recon_event_counts.csv"),
 utils::write.csv(out$toy_stack, project_path("results", "recon_minimal_stack.csv"),
                  row.names = FALSE, na = "")
 utils::write.csv(
-  data.frame(case = c("wide_format_missing_rtime", "staggered_entry_summary_iid"),
-             error = c(out$wide_error, out$summary_error)),
-  project_path("results", "recon_errors.csv"), row.names = FALSE, na = ""
+  data.frame(
+    case = "wide_enrollment_scale_current_contract",
+    condition = out$wide_result
+  ),
+  project_path("results", "recon_current_contract.csv"),
+  row.names = FALSE, na = ""
+)
+historical_errors <- utils::read.csv(
+  project_path("results", "recon_errors.csv"), stringsAsFactors = FALSE
+)
+stopifnot(
+  nrow(historical_errors) == 2L,
+  historical_errors$error[historical_errors$case ==
+    "wide_format_missing_rtime"] ==
+      'argument "rtime" is missing, with no default',
+  out$summary_error == historical_errors$error[historical_errors$case ==
+    "staggered_entry_summary_iid"]
 )
 
 inventory_labels <- unlist(lapply(seq_len(nrow(out$inventory)), function(i) {
