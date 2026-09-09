@@ -86,6 +86,12 @@ Rscript -e 'devtools::test()'
 invoking it directly from the repository root does not use the correct test
 directory.
 
+The Phase 7 clean-clone smoke audit followed these commands on the pushed
+branch and also ran `analysis/01_recon.R`. Its initial failure, correction, and
+successful repeat are recorded in
+[`clean_clone_reproduction.csv`](results/check/clean_clone_reproduction.csv).
+That audit reused the host's R package library and did not run full grids.
+
 For the CRAN-style check, build the tarball before checking it:
 
 ```sh

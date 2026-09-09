@@ -21,6 +21,15 @@ objects were exactly `identical()`—no tolerance [TRACE:
 `::regression_exact_fit_cells`]. Package-level enrollment-scale regression
 checks are described in [04_correction.md](04_correction.md).
 
+The final clean-clone smoke path completed on the pushed branch with no failed
+repeat step: setup, all 36 project tests, and the short reconnaissance analysis
+completed [TRACE: `08_hygiene::clean_clone_repeat_exit_failures`,
+`::clean_clone_repeat_test_passes`]. The initial smoke path exposed and then
+fixed a stale pre-patch assertion in `analysis/01_recon.R`; the failure remains
+recorded in `results/check/clean_clone_reproduction.csv` [TRACE:
+`08_hygiene::clean_clone_new_failure`]. Full grids were deliberately not run in
+the clone.
+
 For the stated simulation DGP, I proved the retention-conditioning identity
 
 ```text

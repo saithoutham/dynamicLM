@@ -12,12 +12,13 @@ observed coefficient bias is therefore driven almost entirely by including
 depend on `U`.
 
 This sharpens the conservative Phase 6 statement. It does **not** prove that
-dependent truncation is harmless generally. In the executed `theta = 0`,
-`delta = -2` arm, entry depends on unmeasured `U`, but `U` is not a risk factor;
-entry is therefore noninformative for failure after conditioning on measured
-`X`. When `theta = 0.5`, `delta = 0`, `U` affects failure but not entry, yet the
-one-covariate fit is already biased. Adding `delta = -2` contributes little
-additional bias.
+dependent truncation is harmless generally. **PROVEN for the stated
+generator:** in the executed `theta = 0`, `delta = -2` arm, entry depends on
+unmeasured `U`, but event time does not; entry and failure are therefore
+independent conditional on measured `X`. When `theta = 0.5`, `delta = 0`, `U`
+affects failure but not entry, yet the one-covariate fit is already biased.
+**EMPIRICAL-ONLY:** adding `delta = -2` contributed little resolved additional
+bias.
 
 ## Data and estimands
 

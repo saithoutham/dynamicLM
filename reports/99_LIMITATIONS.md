@@ -178,3 +178,9 @@ cross-platform byte identity a promise: wall time and floating-point results
 can vary by R, BLAS, compiler, and platform. Exact Regime A identity is
 guaranteed only for the recorded environment and compared commit.
 `results/session.txt` records that environment.
+
+The clean-clone reproduction was a repository-state check on the same host and
+global R library, not a pristine container or second operating system. It ran
+setup, the project tests, and one short analysis, but deliberately did not run
+the full simulation grids or raw-artifact replay. A stronger portability claim
+requires a version-pinned clean R library and an independent platform run.

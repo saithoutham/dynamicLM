@@ -1,0 +1,11 @@
+attempt,step,commit,command,exit_code,status,documented_at_execution,runtime_seconds,issue,resolution
+prior,known_root_test_entry,ed7b7dd,"Rscript tests/testthat.R",1,failed,0,,"No test files found; wrong standalone entry point","README already directs root users to devtools::test()."
+initial,clone,09f0890,"git clone --branch age-scale --single-branch https://github.com/saithoutham/dynamicLM.git",0,passed,1,,,""
+initial,setup,09f0890,"Rscript analysis/00_setup.R",0,passed_with_pending,0,,"PENDING packages: dynpred","README now states that the setup script is an audit and dynpred is non-blocking because source does not import it."
+initial,project_tests,09f0890,"Rscript -e 'devtools::test()'",0,passed,1,,"0 failures; 0 warnings; 0 skips; 36 passes",""
+initial,short_analysis,09f0890,"Rscript analysis/01_recon.R",1,failed,1,,"Error: inherits(wide_error$value, 'captured_error') is not TRUE","Replaced the stale pre-patch error assertion with current wide enrollment-scale contract assertions while preserving the historical captured error artifact."
+repeat,clone,eb1519b,"git clone --branch age-scale --single-branch https://github.com/saithoutham/dynamicLM.git",0,passed,1,,,""
+repeat,setup,eb1519b,"Rscript analysis/00_setup.R",0,passed_with_documented_pending,1,1.46,"PENDING packages: dynpred","No action required; limitation documented in README."
+repeat,project_tests,eb1519b,"Rscript -e 'devtools::test()'",0,passed,1,60.24,"0 failures; 0 warnings; 0 skips; 36 passes",""
+repeat,short_analysis,eb1519b,"Rscript analysis/01_recon.R",0,passed,1,2.41,,""
+repeat,raw_artifact_smoke,eb1519b,"test ! -e results/informative_entry_raw.csv && test ! -e results/simulation_raw.csv",0,passed,1,,"Both raw files absent as documented","Setup tests and short analysis did not require raw regeneration."
