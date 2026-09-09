@@ -5,7 +5,7 @@ an executable test and a `results/trace.csv` reference.
 
 ## IDEA-001: Correlation-aware time-scale selection
 
-Date/commit: 2026-09-08 / PENDING simulation commit
+Date/commit: 2026-09-08 / `67eb695`
 
 Hypothesis (falsifiable): A correlation-aware summary delta-AUC test can select
 the data-generating time scale with useful power while controlling type-I error.
@@ -36,7 +36,7 @@ used as a general time-scale selector.
 
 ## IDEA-002: Survey-weighted landmark supermodels
 
-Date/commit: 2026-09-08 / PENDING application commit
+Date/commit: 2026-09-08 / `67eb695`
 
 Hypothesis (falsifiable): A design-weighted estimator with PSU/stratum-aware
 variance changes inference relative to an unweighted landmark analysis in a
@@ -67,7 +67,7 @@ influence function are still PENDING, so the idea is not promoted.
 
 ## IDEA-003: Covariate staleness adjustment
 
-Date/commit: 2026-09-08 / PENDING application commit
+Date/commit: 2026-09-08 / `67eb695`
 
 Hypothesis (falsifiable): Adding time since last measurement improves summary
 AUC or Brier score under informative visit timing without harming calibration.
@@ -94,7 +94,7 @@ the broader possibility that visit timing contains outcome information.
 
 ## IDEA-004: Inverse-intensity visit weighting
 
-Date/commit: 2026-09-08 / PENDING application commit
+Date/commit: 2026-09-08 / `67eb695`
 
 Hypothesis (falsifiable): Estimated inverse visit-intensity weights reduce bias
 from informative observation times more than a staleness covariate alone.
@@ -164,7 +164,7 @@ counts decreased monotonically. It belongs in every age-scale run.
 
 ## IDEA-007: Entry-conditional censoring ratios
 
-Date/commit: 2026-09-08 / PENDING correction commit
+Date/commit: 2026-09-08 / `eb7ab56`
 
 Hypothesis (falsifiable): Dividing the left-truncated censoring survival at the
 evaluation time by its value at subject entry yields weights that reduce to the
@@ -191,7 +191,7 @@ verified. Consistency and its analytic influence function remain unproved.
 
 ## IDEA-008: Within-window delayed-entry augmentation
 
-Date/commit: 2026-09-08 / PENDING correction commit
+Date/commit: 2026-09-08 / `eb7ab56`
 
 Hypothesis (falsifiable): Admitting subjects at `max(landmark, entry)` improves
 precision without materially increasing coefficient bias relative to strict
@@ -262,7 +262,7 @@ it. Eligibility must be explicit.
 
 ## IDEA-011: Paired subject bootstrap as an immediate IF substitute
 
-Date/commit: 2026-09-08 / PENDING simulation commit
+Date/commit: 2026-09-08 / `67eb695`
 
 Hypothesis (falsifiable): A subject bootstrap shared across landmarks provides
 near-nominal summary-AUC coverage over the entry-heterogeneity stress test.
@@ -289,7 +289,7 @@ drop-in theoretical correction.
 
 ## IDEA-012: Validated scalar Cox engine for large method grids
 
-Date/commit: 2026-09-08 / PENDING simulation commit
+Date/commit: 2026-09-08 / `67eb695`
 
 Hypothesis (falsifiable): A direct Breslow score/Newton solver with cluster
 sandwich variance can reproduce `coxph()` closely enough to run the full grid.
