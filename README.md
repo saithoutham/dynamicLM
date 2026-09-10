@@ -1,58 +1,70 @@
-# Age-Scale Landmark Supermodels
+# Attained-age landmarking with `dynamicLM`
 
-This branch is a source-audited extension of `dynamicLM` for attained-age time
-scales with staggered cohort entry. It uses public data only.
+I use this branch to study what changes when a landmark supermodel is indexed
+by attained age rather than time since a shared baseline. The practical issue
+is staggered observation: at a landmark age, a person should not enter the risk
+set before their record begins.
 
-Run scripts from the repository root. All analysis paths use `here::here()`;
-computed report values are cross-referenced in `results/trace.csv`, and every
-stochastic analysis writes its seed manifest under `results/`.
+This is a research branch of
+[`thehanlab/dynamicLM`](https://github.com/thehanlab/dynamicLM), not a separate
+package release. I kept the original package guide in `README.Rmd`; this file
+describes the attained-age work and how I reproduced it. All analyses use
+public data.
 
-## Current prerequisite status
+## What I changed
 
-Run:
+I added two explicit entry rules to the landmark-data construction:
+
+- `strict` requires observation by the landmark (`entry <= landmark < exit`);
+- `delayed` allows entry during the prediction window and uses a
+  counting-process start time.
+
+I also added entry-conditional censoring weights for AUC and Brier-score point
+estimates. The analytic influence function for staggered entry is still open,
+so `score_left_truncated()` deliberately reports
+`"PENDING: not derived for staggered entry"` instead of presenting an
+unproved standard error.
+
+The simulations separate three questions that are easy to conflate: whether a
+risk set is constructed correctly, whether a fitted coefficient is biased, and
+whether discrimination changes. The independent-entry experiment was largely
+null. Measured risk-dependent entry exposed the eligibility problem, while the
+frailty decomposition pointed to omitted-predictor bias rather than an added
+truncation effect in that particular design. I report the negative results
+alongside the positive ones.
+
+## Where I would start
+
+- [`reports/00_EXECUTIVE_SUMMARY.md`](reports/00_EXECUTIVE_SUMMARY.md) gives the
+  short version of the project.
+- [`reports/99_LIMITATIONS.md`](reports/99_LIMITATIONS.md) lists the unresolved
+  statistical and computational limitations.
+- [`manuscript/age_scale_landmark.md`](manuscript/age_scale_landmark.md) is the
+  current manuscript draft.
+- [`INNOVATIONS.md`](INNOVATIONS.md) records ideas I tested, including the ones
+  I rejected.
+- [`results/README.md`](results/README.md) explains the result files and the
+  intentionally header-only failure logs.
+
+## Local setup
+
+I run the analysis scripts from the repository root. Paths are resolved with
+`here::here()`.
 
 ```sh
 Rscript analysis/00_setup.R
 ```
 
-The required GitHub development build of `riskRegression` must be installed.
-On Apple silicon systems whose R configuration points to absent CRAN Fortran
-libraries, the project includes `tools/Makevars.macos-arm64` as an explicit,
-platform-specific workaround. Do not use it on other platforms.
+The setup script audits the local R environment; it does not install packages.
+The analyses require the GitHub development version of `riskRegression`. On
+the recorded R installation, `dynpred` remains unavailable but is not imported
+by the source used here. Apple silicon systems with a missing Fortran library
+path can use `tools/Makevars.macos-arm64`; that file is not intended for other
+platforms.
 
-`analysis/00_setup.R` is an audit, not an installer. It currently reports
-`dynpred` as `PENDING` on the recorded R release; this is non-blocking because
-the audited package source does not import it. Analysis scripts and project
-tests use `devtools::load_all()` on the checkout, so they do not depend on an
-unidentified installed copy of `dynamicLM`.
+## Reproducing the analyses
 
-The original upstream README is retained in `README.Rmd` while the research
-workflow is under construction.
-
-## Reproducible raw simulation artifacts
-
-The two replicate-level tables above 25 MB are intentionally not tracked:
-`results/simulation_raw.csv` and `results/informative_entry_raw.csv`. Before
-removal, both were rebuilt from their committed seed manifests and verified
-byte-for-byte against the originals. The row counts, byte counts, MD5 hashes,
-and equality results are in
-[`raw_regeneration_verification.csv`](results/check/raw_regeneration_verification.csv).
-
-To recreate both tables from a clean checkout without rerunning the analysis
-reports, run:
-
-```sh
-REGENERATE_CORES=8 Rscript analysis/regenerate_raw.R --write
-```
-
-The script refuses to overwrite either raw table. To audit existing tables
-against fresh manifest-driven rebuilds, use `--verify` instead. Phase 7's
-frailty decomposition requires `results/informative_entry_raw.csv`; regenerate
-it first if the table is absent.
-
-## Reproduce the analyses
-
-After setup, run:
+The numbered scripts are meant to be run in order:
 
 ```sh
 Rscript analysis/01_recon.R
@@ -70,29 +82,46 @@ Rscript analysis/07_auc_informative.R
 Rscript analysis/08_frailty_decomposition.R
 ```
 
-The simulation scripts accept `SIM_CORES` to control local parallelism. Phase 6
-also accepts explicit small-run environment switches for development, but the
-committed result artifacts were produced with the required full settings; a
-small run must not be reported as the study result. Raw regeneration uses
-`REGENERATE_CORES` and is itself a full manifest replay, not a smoke test.
+The simulation scripts accept `SIM_CORES`. Their committed summaries already
+come from the full runs; most readers will only need the reports, result tables,
+and seed manifests.
 
-Run package and project tests with:
+Two large replicate-level tables are reproducible but not tracked:
+`results/simulation_raw.csv` and `results/informative_entry_raw.csv`. I removed
+them only after rebuilding them from the committed seed manifests and comparing
+the files byte for byte. The retained hashes and file sizes are in
+[`results/check/raw_regeneration_verification.csv`](results/check/raw_regeneration_verification.csv).
+To recreate the raw tables:
+
+```sh
+REGENERATE_CORES=8 Rscript analysis/regenerate_raw.R --write
+```
+
+The regeneration script refuses to overwrite an existing raw table. Its
+`--verify` mode compares existing tables with a fresh manifest-driven rebuild.
+
+## Provenance and tests
+
+Numeric results cited in the reports are indexed in `results/trace.csv`, with
+the script, function, seed, runtime, and commit that produced it. Seed manifests
+are stored beside the corresponding result tables. The trace-reference audit
+is:
+
+```sh
+Rscript tools/audit_trace.R
+```
+
+I run the package tests from the repository root with:
 
 ```sh
 Rscript -e 'devtools::test()'
 ```
 
 `tests/testthat.R` is the installed-package entry point used by `R CMD check`;
-invoking it directly from the repository root does not use the correct test
-directory.
+running that file directly from the repository root does not select the test
+directory correctly.
 
-The Phase 7 clean-clone smoke audit followed these commands on the pushed
-branch and also ran `analysis/01_recon.R`. Its initial failure, correction, and
-successful repeat are recorded in
-[`clean_clone_reproduction.csv`](results/check/clean_clone_reproduction.csv).
-That audit reused the host's R package library and did not run full grids.
-
-For the CRAN-style check, build the tarball before checking it:
+For a CRAN-style check, I build the source package first:
 
 ```sh
 R CMD build .
@@ -100,6 +129,6 @@ _R_CHECK_CRAN_INCOMING_=TRUE _R_CHECK_FORCE_SUGGESTS_=false \
   R CMD check --as-cran --no-manual dynamicLM_1.0.0.tar.gz
 ```
 
-The final Phase 7 check completed with inherited non-clean diagnostics. See
-[`cran_attribution.csv`](results/check/cran_attribution.csv) and the preserved
-post-fix log rather than treating test success as CRAN readiness.
+The latest recorded check is not clean. Its remaining warning and notes are
+also present upstream; the side-by-side attribution and preserved logs are in
+[`results/check/cran_attribution.csv`](results/check/cran_attribution.csv).

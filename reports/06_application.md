@@ -28,8 +28,8 @@ environment:
   the first event defined the competing-risks outcome.
 - `flchain` supplied baseline free-light-chain measurements and mortality.
 
-The variable definitions were checked against the installed help files rather
-than inferred from the mission brief [SOURCE: the
+I checked the variable definitions against the installed help files rather
+than relying on preliminary notes [SOURCE: the
 [`survival` package manual](https://spout.ussg.indiana.edu/CRAN/web/packages/survival/survival.pdf)].
 
 For strict landmarking, every row was asserted to satisfy

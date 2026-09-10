@@ -7,7 +7,9 @@ output:
     number_sections: yes
 ---
 
-<!-- README.md is generated from README.Rmd. Please edit that file -->
+<!-- This is the upstream package guide. The age-scale branch keeps its project
+overview in README.md, so knitting this file would replace that branch-specific
+page. -->
 
 ```{r, include = FALSE}
 knitr::opts_chunk$set(

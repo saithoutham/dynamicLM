@@ -1,7 +1,8 @@
-# Innovation Lab Notebook
+# Working notes on ideas I tested
 
-No idea is promoted on plausibility alone. Every verdict below must be backed by
-an executable test and a `results/trace.csv` reference.
+I use this file as a running record of ideas I tried, including the ones that did
+not work. I only promote an idea when I have an executable test and a matching
+entry in `results/trace.csv`.
 
 ## IDEA-001: Correlation-aware time-scale selection
 
