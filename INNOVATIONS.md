@@ -131,7 +131,7 @@ revisited, but this landmark-row approximation should not ship.
 
 ## IDEA-005: Trajectory-model evaluation harness
 
-Date/commit: PENDING
+Date/commit: Not started
 
 Hypothesis (falsifiable): A model-agnostic prediction adapter can evaluate penLM
 and trajectory encoders with identical landmark eligibility and summary metrics.
@@ -139,13 +139,15 @@ and trajectory encoders with identical landmark eligibility and summary metrics.
 Why it might matter: Fair evaluation should isolate representation quality from
 different cohort construction or censoring assumptions.
 
-Test performed: PENDING
+Test performed: None. I parked this idea before implementation because the
+evaluation target and adapter contract were not yet stable.
 
-Result (with numbers + trace refs): PENDING
+Result (with numbers + trace refs): No empirical result.
 
 Verdict: PARK
 
-Reasoning: Build only after the corrected estimand and data contract are stable.
+Reasoning: I will only build this after the corrected estimand and data contract
+are stable.
 
 ## IDEA-006: Entry-risk-set shape diagnostic
 
