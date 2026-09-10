@@ -203,13 +203,13 @@ factorial re-analysis is in
 intervals for the `delta` contrast included zero at `theta = 0` and `theta =
 0.5`, and the `theta`-by-`delta` interaction intervals also included zero. The
 two `theta` main-effect intervals excluded zero for every method [TRACE:
-`08_frailty_decomposition::naive_delta_at_theta_0_estimate`,
-`::naive_delta_at_theta_0p5_estimate`, `::naive_theta_x_delta_estimate`,
-`::strict_delta_at_theta_0_estimate`,
-`::strict_delta_at_theta_0p5_estimate`, `::strict_theta_x_delta_estimate`,
-`::delayed_delta_at_theta_0_estimate`,
-`::delayed_delta_at_theta_0p5_estimate`, and
-`::delayed_theta_x_delta_estimate`, with matching `_ci_low` and `_ci_high`
+`08_frailty_decomposition::naive_delta_at_theta_0_contrast_estimate`,
+`::naive_delta_at_theta_0p5_contrast_estimate`, `::naive_theta_by_delta_interaction_contrast_estimate`,
+`::strict_delta_at_theta_0_contrast_estimate`,
+`::strict_delta_at_theta_0p5_contrast_estimate`, `::strict_theta_by_delta_interaction_contrast_estimate`,
+`::delayed_delta_at_theta_0_contrast_estimate`,
+`::delayed_delta_at_theta_0p5_contrast_estimate`, and
+`::delayed_theta_by_delta_interaction_contrast_estimate`, with matching `_ci_low` and `_ci_high`
 fields; the `theta_at_delta_*` fields trace the main effects]. Within this
 design, the observed coefficient bias is driven by including an omitted hazard
 frailty (`theta`), not by the added entry dependence (`delta`). This does not
