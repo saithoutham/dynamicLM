@@ -5,10 +5,8 @@ suppressPackageStartupMessages(library(here))
 trace_path <- here::here("results", "trace.csv")
 report_paths <- sort(list.files(here::here("reports"), pattern = "\\.md$",
                                 full.names = TRUE))
-manuscript_path <- here::here("manuscript", "age_scale_landmark.md")
-document_paths <- c(report_paths, manuscript_path)
-stopifnot(file.exists(trace_path), length(report_paths) > 0L,
-          file.exists(manuscript_path))
+document_paths <- report_paths
+stopifnot(file.exists(trace_path), length(report_paths) > 0L)
 trace <- utils::read.csv(trace_path, stringsAsFactors = FALSE, check.names = FALSE)
 required <- c("trace_id", "report", "label", "value", "units", "script",
               "function", "seed", "runtime_seconds", "timestamp_utc",

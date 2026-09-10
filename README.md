@@ -39,8 +39,6 @@ alongside the positive ones.
   short version of the project.
 - [`reports/99_LIMITATIONS.md`](reports/99_LIMITATIONS.md) lists the unresolved
   statistical and computational limitations.
-- [`manuscript/age_scale_landmark.md`](manuscript/age_scale_landmark.md) is the
-  current manuscript draft.
 - [`INNOVATIONS.md`](INNOVATIONS.md) records ideas I tested, including the ones
   I rejected.
 - [`results/README.md`](results/README.md) explains the result files and the
