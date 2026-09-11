@@ -1,0 +1,995 @@
+---
+title: "PBC landmark supermodels on enrollment and attained-age time scales"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  out.width = "95%"
+)
+options(width = 110)
+
+library(here)
+devtools::load_all(here::here(), quiet = TRUE)
+```
+
+# Purpose
+
+I compared the PBC landmark supermodel on two clocks. The enrollment-time
+analysis asked about risk a given number of years after enrollment. The
+attained-age analysis asked about risk at a given age. I used the same PBC
+records, prediction horizon, outcome, laboratory transformations, and non-age
+predictors on both sides.
+
+These are not competing estimates of the same quantity. An enrollment landmark
+conditions on survival for a specified time after enrollment; an age landmark
+conditions on being observed and event-free at a specified age. The risk sets
+and scientific questions therefore differ. A difference between the fitted
+models is not bias in either direction.
+
+The age scale is useful when a common time zero has no defensible clinical
+meaning, as in a cohort assembled from electronic health records. It also
+requires an additional eligibility rule: a person must have entered observation
+by the landmark age. I used strict eligibility, `entry <= landmark < exit`, for
+that reason.
+
+# Source and API checks
+
+I read the function definitions in `R/` and their matching help files in `man/`
+before setting up the analysis. I then loaded this checkout directly and
+inspected the formal arguments from the active functions.
+
+```{r api-signatures}
+api_functions <- list(
+  get_pbc_long = get_pbc_long,
+  stack_data = stack_data,
+  add_interactions = add_interactions,
+  dynamic_lm = dynamic_lm,
+  dynamic_lm_LMdataframe = getS3method("dynamic_lm", "LMdataframe"),
+  predict_dynamicLM = getS3method("predict", "dynamicLM"),
+  score = score,
+  calplot = calplot
+)
+
+api_signatures <- data.frame(
+  function_name = names(api_functions),
+  arguments = vapply(api_functions, function(fun) {
+    argument_names <- names(formals(fun))
+    if (length(argument_names)) paste(argument_names, collapse = ", ") else "none"
+  }, character(1L)),
+  row.names = NULL
+)
+
+knitr::kable(api_signatures, col.names = c("Function", "Formal arguments"))
+```
+
+The source checks changed several details from the reference snippet.
+
+```{r source-discrepancies}
+source_discrepancies <- data.frame(
+  item = c(
+    "Longitudinal fields",
+    "Interaction call",
+    "Response formula",
+    "Age-scale summary score",
+    "Covariate parity",
+    "Calibration identifier",
+    "Calibration evaluation"
+  ),
+  source_finding = c(
+    "get_pbc_long() also constructs chol; the reference list omitted it.",
+    "lm_covs is the second add_interactions() argument; omitting it interacts every tracked covariate.",
+    "Hist/CSC and Surv/coxph are supported, but the response parser rejects namespace-qualified Hist or Surv calls.",
+    "score(summary = TRUE) assumes the first landmark contains every eventual subject and stops for staggered age risk sets.",
+    "Updated attained age belongs only in the enrollment-time model because age is the time axis in the attained-age model.",
+    "calplot() defaults to ID, whereas the PBC identifier returned here is id.",
+    "calplot() does not forward its caller environment when it evaluates captured arguments."
+  ),
+  analysis_decision = c(
+    "I retained only bili and albumin as the requested updated laboratories.",
+    "I named the two laboratory covariates explicitly.",
+    "I used the unqualified Hist response with type = CSC for both models.",
+    "I used score() for landmark values and score_left_truncated() for the age-scale arithmetic summary.",
+    "I asserted equality of every non-age model term and reported age as the sole structural exception.",
+    "I passed id_col = id explicitly.",
+    "I supplied an already evaluated argument list through do.call()."
+  ),
+  row.names = NULL
+)
+
+knitr::kable(source_discrepancies)
+```
+
+## PBC data returned by the fork
+
+I ran `get_pbc_long()` without modifying its complete-case restriction. The
+object returned `time` and `status` for the outcome and `tstart` for the visit
+time. Age was already measured in years.
+
+```{r pbc-structure}
+pbc_long <- get_pbc_long()
+str(pbc_long)
+```
+
+```{r pbc-head}
+knitr::kable(head(pbc_long), digits = 3)
+```
+
+```{r pbc-dimensions}
+pbc_dimensions <- data.frame(
+  rows = nrow(pbc_long),
+  subjects = length(unique(pbc_long$id)),
+  minimum_age = min(pbc_long$age),
+  maximum_age = max(pbc_long$age),
+  row.names = NULL
+)
+
+outcome_counts <- as.data.frame(table(pbc_long$status), stringsAsFactors = FALSE)
+names(outcome_counts) <- c("status", "rows")
+
+stopifnot(
+  all(c("id", "time", "status", "tstart", "bili", "albumin") %in% names(pbc_long)),
+  min(pbc_long$age) > 18,
+  max(pbc_long$age) < 100
+)
+
+knitr::kable(pbc_dimensions, digits = 3)
+knitr::kable(outcome_counts)
+```
+
+# Evidence that bilirubin and albumin were updated
+
+I selected bilirubin and albumin only after checking their within-person
+variation. The short extract below shows repeated measurements for subjects
+with several visits.
+
+```{r repeated-lab-examples}
+visits_per_subject <- table(pbc_long$id)
+example_ids <- as.integer(names(head(sort(visits_per_subject, decreasing = TRUE), 3L)))
+example_visits <- do.call(rbind, lapply(example_ids, function(subject_id) {
+  head(
+    pbc_long[pbc_long$id == subject_id, c("id", "tstart", "bili", "albumin")],
+    5L
+  )
+}))
+rownames(example_visits) <- NULL
+
+knitr::kable(example_visits, digits = 3)
+```
+
+I summarized both the number of visits and the within-person standard
+deviations. A subject counted as changing when at least two distinct recorded
+values were present.
+
+```{r longitudinal-summaries}
+visit_summary <- data.frame(
+  statistic = c("Minimum", "First quartile", "Median", "Mean", "Third quartile", "Maximum"),
+  visits = as.numeric(c(
+    min(visits_per_subject),
+    quantile(visits_per_subject, 0.25, names = FALSE, type = 8),
+    median(visits_per_subject),
+    mean(visits_per_subject),
+    quantile(visits_per_subject, 0.75, names = FALSE, type = 8),
+    max(visits_per_subject)
+  )),
+  row.names = NULL
+)
+
+summarize_within_person <- function(variable, label) {
+  values_by_subject <- split(pbc_long[[variable]], pbc_long$id)
+  within_sd <- vapply(values_by_subject, stats::sd, numeric(1L))
+  data.frame(
+    laboratory = label,
+    subjects = length(values_by_subject),
+    subjects_with_multiple_visits = sum(lengths(values_by_subject) > 1L),
+    subjects_with_change = sum(vapply(
+      values_by_subject,
+      function(values) length(unique(values)) > 1L,
+      logical(1L)
+    )),
+    median_within_person_sd = median(within_sd, na.rm = TRUE),
+    first_quartile_within_person_sd = quantile(within_sd, 0.25, na.rm = TRUE, names = FALSE, type = 8),
+    third_quartile_within_person_sd = quantile(within_sd, 0.75, na.rm = TRUE, names = FALSE, type = 8),
+    row.names = NULL
+  )
+}
+
+laboratory_variation <- rbind(
+  summarize_within_person("bili", "Bilirubin"),
+  summarize_within_person("albumin", "Albumin")
+)
+
+stopifnot(all(laboratory_variation$subjects_with_change > 0L))
+
+knitr::kable(visit_summary, digits = 2)
+knitr::kable(laboratory_variation, digits = 3)
+```
+
+# Common analysis definitions
+
+I retained the original three-category endpoint: status zero was censoring,
+status one was transplant, and status two was death. I fitted a cause-specific
+Cox supermodel through `Hist(..., entry)` and `type = "CSC"`, with death as the
+event of interest and transplant retained as the competing event. This avoided
+changing the outcome when I changed the time axis.
+
+I log-transformed bilirubin because of its right-skewed scale and standardized
+both laboratory measures once, before constructing either landmark stack. The
+same transformed values therefore entered both models.
+
+```{r analysis-definitions}
+prediction_window <- 5
+cause_of_interest <- 2L
+enrollment_landmarks <- seq(0, 4, by = 1)
+
+log_bili_center <- mean(log(pbc_long$bili))
+log_bili_scale <- sd(log(pbc_long$bili))
+albumin_center <- mean(pbc_long$albumin)
+albumin_scale <- sd(pbc_long$albumin)
+
+subject_entry_ages <- unique(pbc_long[c("id", "age")])
+age_center <- mean(subject_entry_ages$age)
+age_scale <- sd(subject_entry_ages$age)
+
+pbc_analysis <- transform(
+  pbc_long,
+  age_at_enrollment = age,
+  log_bili_z = (log(bili) - log_bili_center) / log_bili_scale,
+  albumin_z = (albumin - albumin_center) / albumin_scale
+)
+
+shared_fixed_covariates <- c("male", "stage", "trt")
+updated_laboratory_covariates <- c("log_bili_z", "albumin_z")
+shared_model_covariates <- c(shared_fixed_covariates, updated_laboratory_covariates)
+enrollment_model_covariates <- c("attained_age_z", shared_model_covariates)
+age_model_covariates <- shared_model_covariates
+
+stopifnot(
+  identical(
+    setdiff(enrollment_model_covariates, "attained_age_z"),
+    age_model_covariates
+  ),
+  all(is.finite(pbc_analysis$log_bili_z)),
+  all(is.finite(pbc_analysis$albumin_z))
+)
+
+analysis_constants <- data.frame(
+  quantity = c("Prediction window", "Cause of interest", "Enrollment landmarks"),
+  value = c(
+    paste(prediction_window, "years"),
+    paste(cause_of_interest, "(death)"),
+    paste(enrollment_landmarks, collapse = ", ")
+  ),
+  row.names = NULL
+)
+
+covariate_contract <- data.frame(
+  scale = c("Enrollment time", "Attained age"),
+  non_age_covariates = c(
+    paste(shared_model_covariates, collapse = ", "),
+    paste(shared_model_covariates, collapse = ", ")
+  ),
+  age_treatment = c(
+    "Updated attained age entered as a predictor",
+    "Attained age was the time axis and was excluded from the right-hand side"
+  ),
+  row.names = NULL
+)
+
+knitr::kable(analysis_constants)
+knitr::kable(covariate_contract)
+```
+
+# Landmark selection and risk sets
+
+I chose the age landmarks from the empirical first, second, and third quartiles
+of entry age and rounded them to one decimal place. This covered the central
+span of entry ages without selecting round ages first and, as the risk-set table
+shows, retained deaths and horizon controls at each landmark.
+
+```{r age-landmark-selection}
+age_landmark_probabilities <- c(0.25, 0.50, 0.75)
+age_landmarks <- round(
+  unname(quantile(
+    subject_entry_ages$age,
+    age_landmark_probabilities,
+    type = 8
+  )),
+  1
+)
+
+age_landmark_selection <- data.frame(
+  entry_age_percentile = paste0(age_landmark_probabilities * 100, "%"),
+  landmark_age = age_landmarks,
+  row.names = NULL
+)
+
+stopifnot(length(unique(age_landmarks)) == length(age_landmarks))
+knitr::kable(age_landmark_selection, digits = 1)
+```
+
+For enrollment time, I carried each person's baseline age forward by the
+landmark time. For attained age, I instead shifted the outcome and visit times
+onto the age scale and passed entry age to the strict stacker. I did not add age
+to the attained-age model's right-hand side.
+
+```{r build-stacks}
+enrollment_stack <- stack_data(
+  data = pbc_analysis,
+  outcome = list(time = "time", status = "status"),
+  lms = enrollment_landmarks,
+  w = prediction_window,
+  covs = list(
+    fixed = c(shared_fixed_covariates, "age_at_enrollment"),
+    varying = updated_laboratory_covariates
+  ),
+  format = "long",
+  id = "id",
+  rtime = "tstart"
+)
+
+enrollment_stack$data$attained_age_z <- (
+  enrollment_stack$data$age_at_enrollment + enrollment_stack$data$LM - age_center
+) / age_scale
+
+pbc_age <- transform(
+  pbc_analysis,
+  entry_age = age_at_enrollment,
+  exit_age = age_at_enrollment + time,
+  visit_age = age_at_enrollment + tstart
+)
+
+age_stack <- stack_data(
+  data = pbc_age,
+  outcome = list(time = "exit_age", status = "status"),
+  lms = age_landmarks,
+  w = prediction_window,
+  covs = list(
+    fixed = shared_fixed_covariates,
+    varying = updated_laboratory_covariates
+  ),
+  format = "long",
+  id = "id",
+  rtime = "visit_age",
+  entry = "entry_age",
+  entry_mode = "strict"
+)
+
+stopifnot(
+  identical(age_stack$entry_mode, "strict"),
+  identical(age_stack$entry_col, "LM"),
+  all(age_stack$data$entry_age <= age_stack$data$LM),
+  all(age_stack$data$LM < age_stack$data$exit_age),
+  !anyDuplicated(age_stack$data[c("id", "LM")]),
+  !anyDuplicated(enrollment_stack$data[c("id", "LM")])
+)
+```
+
+```{r risk-set-table}
+summarize_risk_sets <- function(stack, scale_label, time_column) {
+  do.call(rbind, lapply(split(stack$data, stack$data$LM), function(landmark_data) {
+    landmark <- unique(landmark_data$LM)
+    stopifnot(length(landmark) == 1L)
+    data.frame(
+      scale = scale_label,
+      landmark = landmark,
+      subjects = length(unique(landmark_data$id)),
+      deaths = sum(landmark_data$status == cause_of_interest),
+      transplants = sum(landmark_data$status == 1L),
+      horizon_controls = sum(
+        landmark_data$status == 0L &
+          landmark_data[[time_column]] >= landmark + prediction_window
+      ),
+      censorings_before_horizon = sum(
+        landmark_data$status == 0L &
+          landmark_data[[time_column]] < landmark + prediction_window
+      ),
+      row.names = NULL
+    )
+  }))
+}
+
+risk_sets <- rbind(
+  summarize_risk_sets(enrollment_stack, "Enrollment time", "time"),
+  summarize_risk_sets(age_stack, "Attained age", "exit_age")
+)
+
+enrollment_risk_counts <- risk_sets$subjects[risk_sets$scale == "Enrollment time"]
+age_risk_counts <- risk_sets$subjects[risk_sets$scale == "Attained age"]
+
+stopifnot(
+  all(diff(enrollment_risk_counts) <= 0L),
+  all(risk_sets$deaths <= risk_sets$subjects),
+  all(risk_sets$transplants <= risk_sets$subjects)
+)
+
+knitr::kable(risk_sets, digits = 1)
+```
+
+The enrollment risk sets decreased monotonically. The attained-age risk sets
+did not have to decrease: later landmarks lost people to events and censoring
+but could also gain people who entered observation at older ages. This is why a
+monotonicity check that is sensible after a shared origin is not an age-scale
+eligibility check.
+
+# Model fitting
+
+I allowed the effects of the two updated laboratory covariates to vary
+quadratically over each scale. I centered and scaled the landmark basis within
+each analysis rather than putting raw attained-age polynomials in the model.
+I did not include a standalone landmark main effect because the unspecified
+baseline hazard already varies over analysis time.
+
+```{r add-landmark-interactions}
+make_landmark_basis <- function(center, half_range) {
+  force(center)
+  force(half_range)
+  list(
+    function(time) (time - center) / half_range,
+    function(time) ((time - center) / half_range)^2
+  )
+}
+
+enrollment_basis <- make_landmark_basis(
+  mean(enrollment_landmarks),
+  diff(range(enrollment_landmarks)) / 2
+)
+age_basis <- make_landmark_basis(
+  mean(age_landmarks),
+  diff(range(age_landmarks)) / 2
+)
+
+enrollment_stack <- add_interactions(
+  enrollment_stack,
+  lm_covs = updated_laboratory_covariates,
+  func_covars = enrollment_basis,
+  func_lms = list()
+)
+age_stack <- add_interactions(
+  age_stack,
+  lm_covs = updated_laboratory_covariates,
+  func_covars = age_basis,
+  func_lms = list()
+)
+
+interaction_names <- c(
+  "log_bili_z_LM1", "log_bili_z_LM2",
+  "albumin_z_LM1", "albumin_z_LM2"
+)
+
+stopifnot(
+  all(interaction_names %in% names(enrollment_stack$data)),
+  all(interaction_names %in% names(age_stack$data))
+)
+
+interaction_columns <- data.frame(
+  updated_covariate = updated_laboratory_covariates,
+  linear_interaction = paste0(updated_laboratory_covariates, "_LM1"),
+  quadratic_interaction = paste0(updated_laboratory_covariates, "_LM2"),
+  row.names = NULL
+)
+
+knitr::kable(interaction_columns)
+```
+
+I used the same cause-specific outcome specification on both scales. Repeated
+landmark records were clustered by subject, so the standard errors below are
+the robust values returned by the cause-specific Cox fits.
+
+```{r fit-models}
+enrollment_formula <- as.formula(
+  paste(
+    "Hist(time, status, LM) ~",
+    "attained_age_z + male + stage + trt +",
+    "log_bili_z + log_bili_z_LM1 + log_bili_z_LM2 +",
+    "albumin_z + albumin_z_LM1 + albumin_z_LM2 + cluster(id)"
+  )
+)
+
+age_formula <- as.formula(
+  paste(
+    "Hist(exit_age, status, LM) ~",
+    "male + stage + trt +",
+    "log_bili_z + log_bili_z_LM1 + log_bili_z_LM2 +",
+    "albumin_z + albumin_z_LM1 + albumin_z_LM2 + cluster(id)"
+  )
+)
+
+capture_conditions <- function(expression) {
+  warnings <- character()
+  messages <- character()
+  value <- withCallingHandlers(
+    tryCatch(eval.parent(substitute(expression)), error = function(error) error),
+    warning = function(warning) {
+      warnings <<- c(warnings, conditionMessage(warning))
+      invokeRestart("muffleWarning")
+    },
+    message = function(message) {
+      messages <<- c(messages, conditionMessage(message))
+      invokeRestart("muffleMessage")
+    }
+  )
+  list(value = value, warnings = unique(warnings), messages = unique(messages))
+}
+
+enrollment_fit_record <- capture_conditions(dynamic_lm(
+  enrollment_stack,
+  enrollment_formula,
+  type = "CSC",
+  method = "breslow",
+  x = TRUE
+))
+age_fit_record <- capture_conditions(dynamic_lm(
+  age_stack,
+  age_formula,
+  type = "CSC",
+  method = "breslow",
+  x = TRUE
+))
+
+fit_condition_table <- data.frame(
+  scale = c("Enrollment time", "Attained age"),
+  warning_count = c(
+    length(enrollment_fit_record$warnings),
+    length(age_fit_record$warnings)
+  ),
+  error = c(
+    if (inherits(enrollment_fit_record$value, "error")) conditionMessage(enrollment_fit_record$value) else "",
+    if (inherits(age_fit_record$value, "error")) conditionMessage(age_fit_record$value) else ""
+  ),
+  row.names = NULL
+)
+
+knitr::kable(fit_condition_table)
+
+stopifnot(
+  !inherits(enrollment_fit_record$value, "error"),
+  !inherits(age_fit_record$value, "error"),
+  length(enrollment_fit_record$warnings) == 0L,
+  length(age_fit_record$warnings) == 0L
+)
+
+enrollment_fit <- enrollment_fit_record$value
+age_fit <- age_fit_record$value
+```
+
+## Shared coefficient table
+
+The interaction bases are centered on different clocks, so the interaction
+coefficients are not estimates of a common parameter. I placed them together to
+show the fitted models, not to interpret their differences as contrasts.
+
+```{r coefficient-table}
+extract_cause_fit <- function(supermodel, cause) {
+  cause_index <- match(cause, supermodel$model$causes)
+  stopifnot(!is.na(cause_index))
+  supermodel$model$models[[cause_index]]
+}
+
+extract_coefficients <- function(supermodel, scale_label) {
+  cause_fit <- extract_cause_fit(supermodel, cause_of_interest)
+  robust_standard_errors <- sqrt(diag(vcov(cause_fit)))
+  data.frame(
+    scale = scale_label,
+    term = names(coef(cause_fit)),
+    estimate = unname(coef(cause_fit)),
+    robust_standard_error = unname(robust_standard_errors),
+    row.names = NULL
+  )
+}
+
+enrollment_coefficients <- extract_coefficients(enrollment_fit, "Enrollment time")
+age_coefficients <- extract_coefficients(age_fit, "Attained age")
+
+shared_terms <- c(
+  "male", "stage", "trt",
+  "log_bili_z", "log_bili_z_LM1", "log_bili_z_LM2",
+  "albumin_z", "albumin_z_LM1", "albumin_z_LM2"
+)
+
+stopifnot(
+  all(shared_terms %in% enrollment_coefficients$term),
+  all(shared_terms %in% age_coefficients$term),
+  identical(
+    enrollment_coefficients$term[enrollment_coefficients$term %in% shared_terms],
+    age_coefficients$term[age_coefficients$term %in% shared_terms]
+  )
+)
+
+coefficient_comparison <- merge(
+  enrollment_coefficients[enrollment_coefficients$term %in% shared_terms, ],
+  age_coefficients[age_coefficients$term %in% shared_terms, ],
+  by = "term",
+  suffixes = c("_enrollment", "_age"),
+  sort = FALSE
+)
+coefficient_comparison <- coefficient_comparison[match(shared_terms, coefficient_comparison$term), ]
+coefficient_comparison <- coefficient_comparison[c(
+  "term",
+  "estimate_enrollment", "robust_standard_error_enrollment",
+  "estimate_age", "robust_standard_error_age"
+)]
+
+knitr::kable(coefficient_comparison, digits = 4)
+```
+
+## Dynamic laboratory effects
+
+The curves below show the fitted log hazard ratio for a one-standard-deviation
+increase in each laboratory value as the landmark changes. The bands use the
+robust covariance matrix from the corresponding cause-specific fit.
+
+```{r dynamic-log-hazard-ratios, fig.width=10, fig.height=8}
+dynamic_log_hazard_ratio <- function(supermodel, marker, landmarks, basis) {
+  cause_fit <- extract_cause_fit(supermodel, cause_of_interest)
+  marker_terms <- c(marker, paste0(marker, "_LM1"), paste0(marker, "_LM2"))
+  stopifnot(all(marker_terms %in% names(coef(cause_fit))))
+  design <- cbind(
+    1,
+    basis[[1L]](landmarks),
+    basis[[2L]](landmarks)
+  )
+  coefficients <- coef(cause_fit)[marker_terms]
+  covariance <- vcov(cause_fit)[marker_terms, marker_terms, drop = FALSE]
+  estimate <- as.numeric(design %*% coefficients)
+  standard_error <- sqrt(rowSums((design %*% covariance) * design))
+  data.frame(
+    landmark = landmarks,
+    estimate = estimate,
+    lower = estimate - qnorm(0.975) * standard_error,
+    upper = estimate + qnorm(0.975) * standard_error,
+    row.names = NULL
+  )
+}
+
+plot_dynamic_effect <- function(curve, title, x_label) {
+  plot(
+    curve$landmark,
+    curve$estimate,
+    type = "n",
+    xlab = x_label,
+    ylab = "Log hazard ratio per SD",
+    main = title,
+    ylim = range(curve$lower, curve$upper)
+  )
+  polygon(
+    c(curve$landmark, rev(curve$landmark)),
+    c(curve$lower, rev(curve$upper)),
+    border = NA,
+    col = "grey85"
+  )
+  abline(h = 0, lty = 2, col = "grey45")
+  lines(curve$landmark, curve$estimate, lwd = 2)
+}
+
+enrollment_grid <- seq(
+  min(enrollment_landmarks),
+  max(enrollment_landmarks),
+  length.out = 200L
+)
+age_grid <- seq(min(age_landmarks), max(age_landmarks), length.out = 200L)
+
+dynamic_curves <- list(
+  enrollment_bili = dynamic_log_hazard_ratio(
+    enrollment_fit, "log_bili_z", enrollment_grid, enrollment_basis
+  ),
+  age_bili = dynamic_log_hazard_ratio(
+    age_fit, "log_bili_z", age_grid, age_basis
+  ),
+  enrollment_albumin = dynamic_log_hazard_ratio(
+    enrollment_fit, "albumin_z", enrollment_grid, enrollment_basis
+  ),
+  age_albumin = dynamic_log_hazard_ratio(
+    age_fit, "albumin_z", age_grid, age_basis
+  )
+)
+
+old_parameters <- par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot_dynamic_effect(
+  dynamic_curves$enrollment_bili,
+  "Bilirubin: enrollment time",
+  "Years after enrollment"
+)
+plot_dynamic_effect(
+  dynamic_curves$age_bili,
+  "Bilirubin: attained age",
+  "Attained age"
+)
+plot_dynamic_effect(
+  dynamic_curves$enrollment_albumin,
+  "Albumin: enrollment time",
+  "Years after enrollment"
+)
+plot_dynamic_effect(
+  dynamic_curves$age_albumin,
+  "Albumin: attained age",
+  "Attained age"
+)
+par(old_parameters)
+```
+
+# Apparent predictive performance
+
+I evaluated the same fitted records used for model estimation, so these are
+apparent rather than externally validated performance estimates. I used
+`score()` directly for the enrollment summary and for the landmark-specific
+values on both scales.
+
+The current summary implementation assumes that the first landmark contains
+every subject who appears later. That is true after a shared enrollment origin
+but false under staggered age entry. I retained the exact age-scale failure
+below and used `score_left_truncated()` for the arithmetic age summary. The
+analytic staggered-entry influence function remains unavailable.
+
+```{r predictions-and-scores}
+enrollment_prediction_record <- capture_conditions(predict(
+  enrollment_fit,
+  cause = cause_of_interest
+))
+age_prediction_record <- capture_conditions(predict(
+  age_fit,
+  cause = cause_of_interest
+))
+
+stopifnot(
+  !inherits(enrollment_prediction_record$value, "error"),
+  !inherits(age_prediction_record$value, "error"),
+  length(enrollment_prediction_record$warnings) == 0L,
+  length(age_prediction_record$warnings) == 0L
+)
+
+enrollment_predictions <- enrollment_prediction_record$value
+age_predictions <- age_prediction_record$value
+
+enrollment_score_record <- capture_conditions(score(
+  list("Enrollment scale" = enrollment_predictions),
+  times = enrollment_landmarks,
+  metrics = c("auc", "brier"),
+  id_col = "id",
+  cause = cause_of_interest,
+  summary = TRUE,
+  contrasts = FALSE
+))
+
+age_landmark_score_record <- capture_conditions(score(
+  list("Age scale" = age_predictions),
+  times = age_landmarks,
+  metrics = c("auc", "brier"),
+  id_col = "id",
+  cause = cause_of_interest,
+  summary = FALSE,
+  contrasts = FALSE
+))
+
+age_summary_failure <- capture_conditions(score(
+  list("Age scale" = age_predictions),
+  times = age_landmarks,
+  metrics = c("auc", "brier"),
+  id_col = "id",
+  cause = cause_of_interest,
+  summary = TRUE,
+  contrasts = FALSE
+))
+
+age_left_truncated_score_record <- capture_conditions(score_left_truncated(
+  risk = setNames(data.frame(age_predictions$preds$risk), "Age scale"),
+  data = age_predictions$data,
+  time_col = "exit_age",
+  status_col = "status",
+  entry_col = "LM",
+  landmark_col = "LM",
+  id_col = "id",
+  cause = cause_of_interest,
+  w = prediction_window
+))
+
+score_condition_table <- data.frame(
+  operation = c(
+    "Enrollment score with summary",
+    "Age score without summary",
+    "Age score with summary",
+    "Age left-truncated point summary"
+  ),
+  warning_count = c(
+    length(enrollment_score_record$warnings),
+    length(age_landmark_score_record$warnings),
+    length(age_summary_failure$warnings),
+    length(age_left_truncated_score_record$warnings)
+  ),
+  error = c(
+    if (inherits(enrollment_score_record$value, "error")) conditionMessage(enrollment_score_record$value) else "",
+    if (inherits(age_landmark_score_record$value, "error")) conditionMessage(age_landmark_score_record$value) else "",
+    if (inherits(age_summary_failure$value, "error")) conditionMessage(age_summary_failure$value) else "",
+    if (inherits(age_left_truncated_score_record$value, "error")) conditionMessage(age_left_truncated_score_record$value) else ""
+  ),
+  row.names = NULL
+)
+
+knitr::kable(score_condition_table)
+
+stopifnot(
+  !inherits(enrollment_score_record$value, "error"),
+  !inherits(age_landmark_score_record$value, "error"),
+  inherits(age_summary_failure$value, "error"),
+  identical(conditionMessage(age_summary_failure$value), "Subsample size mismatch."),
+  !inherits(age_left_truncated_score_record$value, "error")
+)
+
+enrollment_scores <- enrollment_score_record$value
+age_landmark_scores <- age_landmark_score_record$value
+age_left_truncated_scores <- age_left_truncated_score_record$value
+```
+
+The two scoring paths returned the same age-scale point estimates at every
+landmark. This check does not supply the missing analytic summary variance.
+
+```{r age-score-agreement}
+ordinary_age_auc <- age_landmark_scores$AUC$score
+ordinary_age_auc <- ordinary_age_auc[ordinary_age_auc$model == "Age scale", ]
+ordinary_age_auc <- ordinary_age_auc[order(ordinary_age_auc$tLM), ]
+
+ordinary_age_brier <- age_landmark_scores$Brier$score
+ordinary_age_brier <- ordinary_age_brier[ordinary_age_brier$model == "Age scale", ]
+ordinary_age_brier <- ordinary_age_brier[order(ordinary_age_brier$tLM), ]
+
+left_truncated_landmark_scores <- age_left_truncated_scores$score
+left_truncated_landmark_scores <- left_truncated_landmark_scores[
+  order(left_truncated_landmark_scores$landmark),
+]
+
+score_agreement <- data.frame(
+  metric = c("AUC", "Brier"),
+  maximum_absolute_difference = c(
+    max(abs(ordinary_age_auc$AUC - left_truncated_landmark_scores$AUC)),
+    max(abs(ordinary_age_brier$Brier - left_truncated_landmark_scores$Brier))
+  ),
+  row.names = NULL
+)
+
+stopifnot(all(score_agreement$maximum_absolute_difference < 1e-12))
+
+knitr::kable(score_agreement, digits = 16)
+knitr::kable(left_truncated_landmark_scores, digits = 4)
+```
+
+```{r summary-performance}
+enrollment_auc_summary <- enrollment_scores$AUC_summary$score
+enrollment_auc_summary <- enrollment_auc_summary[
+  enrollment_auc_summary$model == "Enrollment scale",
+]
+enrollment_brier_summary <- enrollment_scores$Brier_summary$score
+enrollment_brier_summary <- enrollment_brier_summary[
+  enrollment_brier_summary$model == "Enrollment scale",
+]
+age_summary <- age_left_truncated_scores$summary
+
+summary_performance <- data.frame(
+  scale = c("Enrollment time", "Attained age"),
+  summary_auc = c(enrollment_auc_summary$AUC, age_summary$AUC),
+  summary_auc_standard_error = c(enrollment_auc_summary$se, NA_real_),
+  summary_brier = c(enrollment_brier_summary$Brier, age_summary$Brier),
+  summary_brier_standard_error = c(enrollment_brier_summary$se, NA_real_),
+  inference = c(
+    "Original analytic summary calculation",
+    age_left_truncated_scores$analytic_influence_function
+  ),
+  row.names = NULL
+)
+
+knitr::kable(summary_performance, digits = 4)
+```
+
+The summary values answer different prediction questions for different
+landmark populations. I therefore treated this table as a descriptive
+time-scale comparison, not as a test that one clock performed better.
+
+# Calibration
+
+The apparent calibration plots rendered at every requested landmark. I used
+the same quantile grouping on both scales and retained the condition table so a
+future failure will be visible rather than silently dropped.
+
+```{r enrollment-calibration, fig.width=10, fig.height=7}
+old_parameters <- par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+enrollment_calibration_arguments <- list(
+  object = list("Enrollment scale" = enrollment_predictions),
+  times = enrollment_landmarks,
+  id_col = "id",
+  cause = cause_of_interest,
+  method = "quantile",
+  q = 4,
+  legend = FALSE,
+  xlim = c(0, 1),
+  ylim = c(0, 1)
+)
+enrollment_calibration_record <- capture_conditions(do.call(
+  calplot,
+  enrollment_calibration_arguments
+))
+par(old_parameters)
+
+if (inherits(enrollment_calibration_record$value, "error")) {
+  stop(
+    "Enrollment calibration failed: ",
+    conditionMessage(enrollment_calibration_record$value)
+  )
+}
+```
+
+```{r age-calibration, fig.width=10, fig.height=4}
+old_parameters <- par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
+age_calibration_arguments <- list(
+  object = list("Age scale" = age_predictions),
+  times = age_landmarks,
+  id_col = "id",
+  cause = cause_of_interest,
+  method = "quantile",
+  q = 4,
+  legend = FALSE,
+  xlim = c(0, 1),
+  ylim = c(0, 1)
+)
+age_calibration_record <- capture_conditions(do.call(
+  calplot,
+  age_calibration_arguments
+))
+par(old_parameters)
+
+if (inherits(age_calibration_record$value, "error")) {
+  stop(
+    "Age calibration failed: ",
+    conditionMessage(age_calibration_record$value)
+  )
+}
+```
+
+```{r calibration-conditions}
+calibration_conditions <- data.frame(
+  scale = c("Enrollment time", "Attained age"),
+  warning_count = c(
+    length(enrollment_calibration_record$warnings),
+    length(age_calibration_record$warnings)
+  ),
+  error = c(
+    if (inherits(enrollment_calibration_record$value, "error")) conditionMessage(enrollment_calibration_record$value) else "",
+    if (inherits(age_calibration_record$value, "error")) conditionMessage(age_calibration_record$value) else ""
+  ),
+  row.names = NULL
+)
+
+knitr::kable(calibration_conditions)
+```
+
+# Interpretation
+
+The enrollment analysis used a common origin and updated attained age as a
+predictor. The attained-age analysis used age as the clock, excluded age from
+the right-hand side, and enforced observation by each landmark. The remaining
+predictors and the two laboratory interaction structures were identical.
+
+The age-scale risk-set pattern illustrated the practical difference: people
+could enter as age advanced, so a later age landmark could contain more eligible
+subjects than an earlier one. Strict entry made that membership rule explicit.
+
+Within-window delayed entry was not part of this primary comparison. In the
+separate NAFLD application, it added very little analyzable longitudinal
+information because most later entrants lacked a laboratory value at their
+analysis entry. That finding supports treating strict entry as the clearer
+primary analysis rather than assuming delayed entry will automatically recover
+substantial usable data.
+
+# Session information
+
+```{r session-information}
+sessionInfo()
+```
