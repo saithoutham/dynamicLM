@@ -1588,6 +1588,7 @@ enrollment_landmarks &lt;- seq(0, 4, by = 1)
 confidence_level &lt;- 0.95
 n_boot &lt;- getOption(&quot;timescale.n_boot&quot;, 200L)
 bootstrap_seed &lt;- 20260922L
+diagnostic_pilot_replicates &lt;- 50L
 
 stopifnot(
   is.numeric(n_boot), length(n_boot) == 1L,
@@ -5698,7 +5699,11 @@ original values.</p>
       prediction_key(enrollment_raw$data),
       prediction_key(enrollment_model$data)
     ),
-    identical(prediction_key(age_raw$data), prediction_key(age_model$data))
+    identical(prediction_key(age_raw$data), prediction_key(age_model$data)),
+    anyDuplicated(enrollment_raw$data[c(&quot;id&quot;, &quot;LM&quot;)]) == 0L,
+    anyDuplicated(enrollment_model$data[c(&quot;id&quot;, &quot;LM&quot;)]) == 0L,
+    anyDuplicated(age_raw$data[c(&quot;id&quot;, &quot;LM&quot;)]) == 0L,
+    anyDuplicated(age_model$data[c(&quot;id&quot;, &quot;LM&quot;)]) == 0L
   )
   list(
     enrollment_raw = enrollment_raw, enrollment_model = enrollment_model,
@@ -5712,12 +5717,21 @@ resample_subjects &lt;- function(longitudinal_data, sampled_ids) {
       longitudinal_data$id == sampled_ids[index], , drop = FALSE
     ]
     stopifnot(nrow(subject_rows) &gt; 0L)
+    subject_rows$.bootstrap_source_id &lt;- subject_rows$id
     subject_rows$id &lt;- index
     subject_rows
   })
   out &lt;- do.call(rbind, pieces)
   rownames(out) &lt;- NULL
-  stopifnot(length(unique(out$id)) == length(sampled_ids))
+  stopifnot(
+    length(unique(out$id)) == length(sampled_ids),
+    all(vapply(
+      split(out$.bootstrap_source_id, out$id),
+      function(source_ids) length(unique(source_ids)) == 1L,
+      logical(1L)
+    ))
+  )
+  out$.bootstrap_source_id &lt;- NULL
   out
 }
 
@@ -5728,6 +5742,168 @@ fit_bootstrap_disjoint &lt;- function(lmdata, landmarks, formula) {
       type = &quot;CSC&quot;, method = &quot;breslow&quot;, x = TRUE
     ))
   }), as.character(landmarks))
+}
+
+bind_non_null &lt;- function(objects) {
+  objects &lt;- objects[!vapply(objects, is.null, logical(1L))]
+  if (length(objects)) do.call(rbind, objects) else NULL
+}
+
+score_prediction_diagnostic &lt;- function(prediction, landmark) {
+  record &lt;- capture_conditions(score(
+    list(Model = prediction), times = landmark,
+    metrics = c(&quot;auc&quot;, &quot;brier&quot;), id_col = &quot;id&quot;,
+    cause = cause_of_interest, summary = FALSE, contrasts = FALSE
+  ))
+  if (inherits(record$value, &quot;error&quot;)) {
+    return(list(ok = FALSE, error = conditionMessage(record$value)))
+  }
+  auc &lt;- as.data.frame(record$value$AUC$score)
+  brier &lt;- as.data.frame(record$value$Brier$score)
+  auc &lt;- auc[as.character(auc$model) == &quot;Model&quot;, , drop = FALSE]
+  brier &lt;- brier[as.character(brier$model) == &quot;Model&quot;, , drop = FALSE]
+  ok &lt;- nrow(auc) == 1L &amp;&amp; nrow(brier) == 1L &amp;&amp;
+    is.finite(auc$AUC) &amp;&amp; is.finite(brier$Brier)
+  list(ok = ok, error = if (ok) &quot;&quot; else &quot;non-finite or missing score&quot;)
+}
+
+direct_age_cause_fit &lt;- function(lmdata, formula, cause) {
+  rhs &lt;- paste(deparse(formula[[3L]]), collapse = &quot;&quot;)
+  direct_formula &lt;- as.formula(paste0(
+    &quot;Surv(LM, exit_age, status == &quot;, cause, &quot;) ~ &quot;, rhs
+  ))
+  capture_conditions(survival::coxph(
+    direct_formula, data = lmdata$data, method = &quot;breslow&quot;, x = TRUE
+  ))
+}
+
+diagnose_age_fit &lt;- function(fit_record, training_stack, formula, landmarks,
+                             replicate, method) {
+  rows &lt;- list()
+  model_error &lt;- if (inherits(fit_record$value, &quot;error&quot;)) {
+    conditionMessage(fit_record$value)
+  } else &quot;&quot;
+
+  for (landmark in landmarks) {
+    one_landmark &lt;- subset_lmdata(training_stack, landmark)
+    for (cause in c(transplant_code, cause_of_interest)) {
+      event_count &lt;- sum(one_landmark$data$status == cause)
+      cause_fit &lt;- NULL
+      coefficient_names &lt;- character()
+      if (!inherits(fit_record$value, &quot;error&quot;)) {
+        cause_fit &lt;- extract_cause_fit(fit_record$value, cause)
+        coefficient_names &lt;- names(coef(cause_fit))[!is.finite(coef(cause_fit))]
+      }
+      needs_direct_check &lt;- inherits(fit_record$value, &quot;error&quot;) ||
+        length(fit_record$warnings) &gt; 0L || length(coefficient_names) &gt; 0L
+      direct_record &lt;- if (needs_direct_check) {
+        direct_age_cause_fit(training_stack, formula, cause)
+      } else NULL
+      cause_error &lt;- if (!is.null(direct_record) &amp;&amp;
+                         inherits(direct_record$value, &quot;error&quot;)) {
+        conditionMessage(direct_record$value)
+      } else &quot;&quot;
+      cause_warning &lt;- if (!is.null(direct_record)) {
+        paste(direct_record$warnings, collapse = &quot; | &quot;)
+      } else &quot;&quot;
+      if (!is.null(direct_record) &amp;&amp; !inherits(direct_record$value, &quot;error&quot;)) {
+        direct_coefficients &lt;- coef(direct_record$value)
+        coefficient_names &lt;- union(
+          coefficient_names,
+          names(direct_coefficients)[!is.finite(direct_coefficients)]
+        )
+      }
+      cause_event_times &lt;- training_stack$data$exit_age[
+        training_stack$data$status == cause
+      ]
+      last_event_time &lt;- if (length(cause_event_times)) {
+        max(cause_event_times)
+      } else NA_real_
+      horizon &lt;- landmark + prediction_window
+      rows[[length(rows) + 1L]] &lt;- data.frame(
+        replicate = replicate,
+        method = method,
+        landmark = landmark,
+        cause = cause,
+        events = event_count,
+        model_fit_error = model_error,
+        cause_fit_error = cause_error,
+        cause_fit_warning = cause_warning,
+        nonfinite_coefficients = paste(coefficient_names, collapse = &quot;, &quot;),
+        horizon = horizon,
+        last_event_time = last_event_time,
+        horizon_past_last_event = is.finite(last_event_time) &amp;&amp;
+          horizon &gt; last_event_time,
+        row.names = NULL
+      )
+    }
+  }
+  do.call(rbind, rows)
+}
+
+diagnose_age_predictions &lt;- function(fit_record, training_stack, test_stack,
+                                     landmarks, replicate, method) {
+  rows &lt;- list()
+  model_error &lt;- inherits(fit_record$value, &quot;error&quot;)
+  predictions &lt;- list()
+  for (sample_name in c(&quot;bootstrap_train&quot;, &quot;original_test&quot;)) {
+    target &lt;- if (sample_name == &quot;bootstrap_train&quot;) training_stack else test_stack
+    predictions[[sample_name]] &lt;- if (model_error) {
+      list(value = fit_record$value, warnings = character(), messages = character())
+    } else {
+      capture_conditions(predict(
+        fit_record$value, newdata = target, cause = cause_of_interest,
+        complete = FALSE
+      ))
+    }
+  }
+
+  for (landmark in landmarks) {
+    row &lt;- data.frame(
+      replicate = replicate,
+      method = method,
+      landmark = landmark,
+      train_prediction_error = &quot;&quot;,
+      test_prediction_error = &quot;&quot;,
+      train_na_predictions = NA_integer_,
+      test_na_predictions = NA_integer_,
+      train_scoring_error = &quot;&quot;,
+      test_scoring_error = &quot;&quot;,
+      row.names = NULL
+    )
+    for (sample_name in names(predictions)) {
+      prefix &lt;- if (sample_name == &quot;bootstrap_train&quot;) &quot;train&quot; else &quot;test&quot;
+      prediction_record &lt;- predictions[[sample_name]]
+      if (inherits(prediction_record$value, &quot;error&quot;)) {
+        row[[paste0(prefix, &quot;_prediction_error&quot;)]] &lt;-
+          conditionMessage(prediction_record$value)
+        next
+      }
+      prediction &lt;- subset_prediction(prediction_record$value, landmark)
+      na_predictions &lt;- sum(is.na(prediction$preds$risk))
+      row[[paste0(prefix, &quot;_na_predictions&quot;)]] &lt;- na_predictions
+      score_record &lt;- if (na_predictions &gt; 0L) {
+        list(ok = FALSE, error = &quot;NA predictions&quot;)
+      } else {
+        score_prediction_diagnostic(prediction, landmark)
+      }
+      row[[paste0(prefix, &quot;_scoring_error&quot;)]] &lt;- score_record$error
+    }
+    rows[[length(rows) + 1L]] &lt;- row
+  }
+  do.call(rbind, rows)
+}
+
+diagnose_age_model &lt;- function(fit_record, training_stack, test_stack, formula,
+                               landmarks, replicate, method) {
+  list(
+    fit = diagnose_age_fit(
+      fit_record, training_stack, formula, landmarks, replicate, method
+    ),
+    prediction = diagnose_age_predictions(
+      fit_record, training_stack, test_stack, landmarks, replicate, method
+    )
+  )
 }
 
 score_one_prediction &lt;- function(prediction, landmark) {
@@ -5831,10 +6007,50 @@ bootstrap_samples &lt;- lapply(seq_len(n_boot), function(replicate) {
 })
 
 run_bootstrap_replicate &lt;- function(replicate) {
-  bootstrap_long &lt;- resample_subjects(
+  bootstrap_long_record &lt;- capture_conditions(resample_subjects(
     pbc_analysis, bootstrap_samples[[replicate]]
+  ))
+  if (inherits(bootstrap_long_record$value, &quot;error&quot;)) {
+    return(list(
+      scores = NULL,
+      stack = data.frame(
+        replicate = replicate,
+        resample_error = conditionMessage(bootstrap_long_record$value),
+        stack_build_error = &quot;&quot;,
+        age_raw_duplicate_id_lm = NA_integer_,
+        age_model_duplicate_id_lm = NA_integer_
+      ),
+      fit = NULL, prediction = NULL, unexpected = NULL
+    ))
+  }
+  stacks_record &lt;- capture_conditions(build_analysis_stacks(
+    bootstrap_long_record$value
+  ))
+  if (inherits(stacks_record$value, &quot;error&quot;)) {
+    return(list(
+      scores = NULL,
+      stack = data.frame(
+        replicate = replicate,
+        resample_error = &quot;&quot;,
+        stack_build_error = conditionMessage(stacks_record$value),
+        age_raw_duplicate_id_lm = NA_integer_,
+        age_model_duplicate_id_lm = NA_integer_
+      ),
+      fit = NULL, prediction = NULL, unexpected = NULL
+    ))
+  }
+  stacks &lt;- stacks_record$value
+  stack_diagnostic &lt;- data.frame(
+    replicate = replicate,
+    resample_error = &quot;&quot;,
+    stack_build_error = &quot;&quot;,
+    age_raw_duplicate_id_lm = anyDuplicated(
+      stacks$age_raw$data[c(&quot;id&quot;, &quot;LM&quot;)]
+    ),
+    age_model_duplicate_id_lm = anyDuplicated(
+      stacks$age_model$data[c(&quot;id&quot;, &quot;LM&quot;)]
+    )
   )
-  stacks &lt;- build_analysis_stacks(bootstrap_long)
 
   enrollment_super_fit &lt;- capture_conditions(dynamic_lm(
     stacks$enrollment_model, enrollment_formula,
@@ -5852,7 +6068,7 @@ run_bootstrap_replicate &lt;- function(replicate) {
     stacks$age_raw, age_landmarks, age_disjoint_formula
   )
 
-  rows &lt;- list(
+  score_rows &lt;- list(
     evaluate_supermodel_bootstrap(
       enrollment_super_fit, stacks$enrollment_model,
       original_stacks$enrollment_model, enrollment_landmarks,
@@ -5872,8 +6088,32 @@ run_bootstrap_replicate &lt;- function(replicate) {
       age_landmarks, replicate, &quot;Attained age&quot;
     )
   )
-  rows &lt;- rows[!vapply(rows, is.null, logical(1L))]
-  if (length(rows)) do.call(rbind, rows) else NULL
+  super_diagnostic &lt;- diagnose_age_model(
+    age_super_fit, stacks$age_model, original_stacks$age_model,
+    age_formula, age_landmarks, replicate, &quot;Supermodel&quot;
+  )
+  disjoint_diagnostics &lt;- lapply(age_landmarks, function(landmark) {
+    diagnose_age_model(
+      age_disjoint_fits[[as.character(landmark)]],
+      subset_lmdata(stacks$age_raw, landmark),
+      subset_lmdata(original_stacks$age_raw, landmark),
+      age_disjoint_formula, landmark, replicate, &quot;Disjoint&quot;
+    )
+  })
+
+  list(
+    scores = bind_non_null(score_rows),
+    stack = stack_diagnostic,
+    fit = bind_non_null(c(
+      list(super_diagnostic$fit),
+      lapply(disjoint_diagnostics, `[[`, &quot;fit&quot;)
+    )),
+    prediction = bind_non_null(c(
+      list(super_diagnostic$prediction),
+      lapply(disjoint_diagnostics, `[[`, &quot;prediction&quot;)
+    )),
+    unexpected = NULL
+  )
 }
 
 bootstrap_cores &lt;- getOption(
@@ -5881,7 +6121,17 @@ bootstrap_cores &lt;- getOption(
   if (.Platform$OS.type == &quot;windows&quot;) 1L else min(4L, parallel::detectCores(logical = FALSE))
 )
 safe_bootstrap_replicate &lt;- function(replicate) {
-  tryCatch(run_bootstrap_replicate(replicate), error = function(error) NULL)
+  tryCatch(
+    run_bootstrap_replicate(replicate),
+    error = function(error) list(
+      scores = NULL, stack = NULL, fit = NULL, prediction = NULL,
+      unexpected = data.frame(
+        replicate = replicate,
+        error = conditionMessage(error),
+        row.names = NULL
+      )
+    )
+  )
 }
 if (.Platform$OS.type == &quot;windows&quot; || bootstrap_cores &lt;= 1L) {
   bootstrap_results &lt;- lapply(seq_len(n_boot), safe_bootstrap_replicate)
@@ -5891,10 +6141,16 @@ if (.Platform$OS.type == &quot;windows&quot; || bootstrap_cores &lt;= 1L) {
     mc.cores = bootstrap_cores, mc.preschedule = FALSE
   )
 }
-bootstrap_results &lt;- bootstrap_results[
-  !vapply(bootstrap_results, is.null, logical(1L))
-]
-bootstrap_scores &lt;- do.call(rbind, bootstrap_results)
+bootstrap_scores &lt;- bind_non_null(lapply(bootstrap_results, `[[`, &quot;scores&quot;))
+age_stack_diagnostics &lt;- bind_non_null(lapply(bootstrap_results, `[[`, &quot;stack&quot;))
+age_fit_diagnostics &lt;- bind_non_null(lapply(bootstrap_results, `[[`, &quot;fit&quot;))
+age_prediction_diagnostics &lt;- bind_non_null(lapply(
+  bootstrap_results, `[[`, &quot;prediction&quot;
+))
+unexpected_bootstrap_errors &lt;- bind_non_null(lapply(
+  bootstrap_results, `[[`, &quot;unexpected&quot;
+))
+stopifnot(!is.null(bootstrap_scores))
 rownames(bootstrap_scores) &lt;- NULL
 
 bootstrap_train &lt;- bootstrap_scores[
@@ -5959,6 +6215,340 @@ stopifnot(
     optimism_corrected_performance$successful_replicates +
       optimism_corrected_performance$failed_replicates == n_boot
   )
+)
+
+age_stack_summary &lt;- data.frame(
+  bootstrap_replicates = n_boot,
+  resample_errors = sum(nzchar(age_stack_diagnostics$resample_error)),
+  stack_build_errors = sum(nzchar(age_stack_diagnostics$stack_build_error)),
+  maximum_age_raw_duplicate_id_lm = max(
+    age_stack_diagnostics$age_raw_duplicate_id_lm, na.rm = TRUE
+  ),
+  maximum_age_model_duplicate_id_lm = max(
+    age_stack_diagnostics$age_model_duplicate_id_lm, na.rm = TRUE
+  ),
+  unexpected_replicate_errors = if (is.null(unexpected_bootstrap_errors)) {
+    0L
+  } else nrow(unexpected_bootstrap_errors),
+  row.names = NULL
+)
+
+age_score_pair_counts &lt;- aggregate(
+  replicate ~ method + landmark,
+  paired_bootstrap[paired_bootstrap$scale == &quot;Attained age&quot;, ],
+  function(replicates) length(unique(replicates))
+)
+names(age_score_pair_counts)[names(age_score_pair_counts) == &quot;replicate&quot;] &lt;-
+  &quot;complete_score_pairs&quot;
+age_score_pair_grid &lt;- expand.grid(
+  method = c(&quot;Supermodel&quot;, &quot;Disjoint&quot;),
+  landmark = age_landmarks,
+  stringsAsFactors = FALSE
+)
+age_score_pair_counts &lt;- merge(
+  age_score_pair_grid, age_score_pair_counts,
+  by = c(&quot;method&quot;, &quot;landmark&quot;), all.x = TRUE, sort = FALSE
+)
+age_score_pair_counts$complete_score_pairs[
+  is.na(age_score_pair_counts$complete_score_pairs)
+] &lt;- 0L
+age_score_pair_counts$failed_score_pairs &lt;-
+  n_boot - age_score_pair_counts$complete_score_pairs
+
+age_fit_failure_tally &lt;- do.call(rbind, lapply(
+  split(age_fit_diagnostics, list(
+    age_fit_diagnostics$method,
+    age_fit_diagnostics$landmark,
+    age_fit_diagnostics$cause
+  ), drop = TRUE),
+  function(rows) {
+    data.frame(
+      method = rows$method[1L],
+      landmark = rows$landmark[1L],
+      cause = rows$cause[1L],
+      zero_event_replicates = sum(rows$events == 0L),
+      model_fit_error_replicates = sum(nzchar(rows$model_fit_error)),
+      cause_fit_error_replicates = sum(nzchar(rows$cause_fit_error)),
+      warning_replicates = sum(nzchar(rows$cause_fit_warning)),
+      nonfinite_coefficient_replicates = sum(
+        nzchar(rows$nonfinite_coefficients)
+      ),
+      horizon_past_last_event_replicates = sum(
+        rows$horizon_past_last_event
+      ),
+      row.names = NULL
+    )
+  }
+))
+age_fit_failure_tally &lt;- merge(
+  age_fit_failure_tally, age_score_pair_counts,
+  by = c(&quot;method&quot;, &quot;landmark&quot;), all.x = TRUE, sort = FALSE
+)
+rownames(age_fit_failure_tally) &lt;- NULL
+
+age_prediction_failure_tally &lt;- do.call(rbind, lapply(
+  split(age_prediction_diagnostics, list(
+    age_prediction_diagnostics$method,
+    age_prediction_diagnostics$landmark
+  ), drop = TRUE),
+  function(rows) {
+    data.frame(
+      method = rows$method[1L],
+      landmark = rows$landmark[1L],
+      train_prediction_error_replicates = sum(nzchar(
+        rows$train_prediction_error
+      )),
+      test_prediction_error_replicates = sum(nzchar(
+        rows$test_prediction_error
+      )),
+      train_NA_prediction_replicates = sum(
+        rows$train_na_predictions &gt; 0L, na.rm = TRUE
+      ),
+      test_NA_prediction_replicates = sum(
+        rows$test_na_predictions &gt; 0L, na.rm = TRUE
+      ),
+      train_scoring_error_replicates = sum(nzchar(
+        rows$train_scoring_error
+      )),
+      test_scoring_error_replicates = sum(nzchar(
+        rows$test_scoring_error
+      )),
+      row.names = NULL
+    )
+  }
+))
+age_prediction_failure_tally &lt;- merge(
+  age_prediction_failure_tally, age_score_pair_counts,
+  by = c(&quot;method&quot;, &quot;landmark&quot;), all.x = TRUE, sort = FALSE
+)
+rownames(age_prediction_failure_tally) &lt;- NULL
+
+failure_reason_rows &lt;- list()
+normalize_failure_reason &lt;- function(reason) {
+  if (grepl(&quot;^arguments imply differing number of rows:&quot;, reason)) {
+    return(&quot;zero-event model returned no coefficient rows&quot;)
+  }
+  if (grepl(&quot;infinite argument in coxph.wtest&quot;, reason, fixed = TRUE)) {
+    return(&quot;Cox Wald calculation had an infinite argument&quot;)
+  }
+  if (grepl(&quot;Ran out of iterations&quot;, reason, fixed = TRUE)) {
+    return(&quot;Cox fit did not converge&quot;)
+  }
+  if (grepl(&quot;beta may be infinite&quot;, reason, fixed = TRUE)) {
+    return(&quot;one or more Cox coefficients may be infinite&quot;)
+  }
+  reason
+}
+append_failure_reason &lt;- function(method, landmark, cause, stage, reason) {
+  failure_reason_rows[[length(failure_reason_rows) + 1L]] &lt;&lt;- data.frame(
+    method = method,
+    landmark = landmark,
+    cause = as.character(cause),
+    stage = stage,
+    reason = normalize_failure_reason(reason),
+    stringsAsFactors = FALSE
+  )
+}
+for (row_index in seq_len(nrow(age_fit_diagnostics))) {
+  row &lt;- age_fit_diagnostics[row_index, ]
+  if (row$events == 0L) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      &quot;event count&quot;, &quot;zero events inside the prediction window&quot;
+    )
+  }
+  if (nzchar(row$model_fit_error)) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      &quot;competing-risk fit&quot;, row$model_fit_error
+    )
+  }
+  if (nzchar(row$cause_fit_error)) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      &quot;cause-specific fit&quot;, row$cause_fit_error
+    )
+  }
+  if (nzchar(row$cause_fit_warning)) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      &quot;cause-specific fit&quot;, row$cause_fit_warning
+    )
+  }
+  if (nzchar(row$nonfinite_coefficients)) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      &quot;cause-specific fit&quot;,
+      &quot;one or more non-finite coefficients&quot;
+    )
+  }
+}
+for (row_index in seq_len(nrow(age_prediction_diagnostics))) {
+  row &lt;- age_prediction_diagnostics[row_index, ]
+  prediction_fields &lt;- c(
+    train_prediction_error = &quot;train prediction&quot;,
+    test_prediction_error = &quot;test prediction&quot;,
+    train_scoring_error = &quot;train scoring&quot;,
+    test_scoring_error = &quot;test scoring&quot;
+  )
+  for (field in names(prediction_fields)) {
+    if (nzchar(row[[field]])) {
+      append_failure_reason(
+        row$method, row$landmark, &quot;joint CIF&quot;,
+        unname(prediction_fields[field]), row[[field]]
+      )
+    }
+  }
+  if (is.finite(row$train_na_predictions) &amp;&amp; row$train_na_predictions &gt; 0L) {
+    append_failure_reason(
+      row$method, row$landmark, &quot;joint CIF&quot;,
+      &quot;train prediction&quot;, &quot;one or more NA risks&quot;
+    )
+  }
+  if (is.finite(row$test_na_predictions) &amp;&amp; row$test_na_predictions &gt; 0L) {
+    append_failure_reason(
+      row$method, row$landmark, &quot;joint CIF&quot;,
+      &quot;test prediction&quot;, &quot;one or more NA risks&quot;
+    )
+  }
+}
+age_failure_reason_tally &lt;- aggregate(
+  list(replicates = rep(1L, length(failure_reason_rows))),
+  by = do.call(rbind, failure_reason_rows),
+  FUN = sum
+)
+age_failure_reason_tally &lt;- age_failure_reason_tally[
+  order(
+    age_failure_reason_tally$method,
+    age_failure_reason_tally$landmark,
+    age_failure_reason_tally$cause,
+    age_failure_reason_tally$stage,
+    age_failure_reason_tally$reason
+  ),
+]
+rownames(age_failure_reason_tally) &lt;- NULL
+
+super_transplant_zero_by_replicate &lt;- aggregate(
+  events ~ replicate,
+  age_fit_diagnostics[
+    age_fit_diagnostics$method == &quot;Supermodel&quot; &amp;
+      age_fit_diagnostics$cause == transplant_code,
+  ],
+  function(events) any(events == 0L)
+)
+names(super_transplant_zero_by_replicate)[2L] &lt;-
+  &quot;zero_transplants_in_any_age_window&quot;
+age_super_pair_grid &lt;- expand.grid(
+  replicate = seq_len(n_boot),
+  landmark = age_landmarks,
+  stringsAsFactors = FALSE
+)
+age_super_complete_pairs &lt;- paired_bootstrap[
+  paired_bootstrap$scale == &quot;Attained age&quot; &amp;
+    paired_bootstrap$method == &quot;Supermodel&quot;,
+  c(&quot;replicate&quot;, &quot;landmark&quot;)
+]
+age_super_complete_pairs$complete_score_pair &lt;- TRUE
+age_super_pair_grid &lt;- merge(
+  age_super_pair_grid, age_super_complete_pairs,
+  by = c(&quot;replicate&quot;, &quot;landmark&quot;), all.x = TRUE, sort = FALSE
+)
+age_super_pair_grid$complete_score_pair[
+  is.na(age_super_pair_grid$complete_score_pair)
+] &lt;- FALSE
+age_super_pair_grid &lt;- merge(
+  age_super_pair_grid, super_transplant_zero_by_replicate,
+  by = &quot;replicate&quot;, all.x = TRUE, sort = FALSE
+)
+age_super_zero_event_link &lt;- do.call(rbind, lapply(
+  split(age_super_pair_grid, list(
+    age_super_pair_grid$landmark,
+    age_super_pair_grid$zero_transplants_in_any_age_window
+  ), drop = TRUE),
+  function(rows) {
+    data.frame(
+      landmark = rows$landmark[1L],
+      zero_transplants_in_any_age_window =
+        rows$zero_transplants_in_any_age_window[1L],
+      replicates = nrow(rows),
+      complete_score_pairs = sum(rows$complete_score_pair),
+      failed_score_pairs = sum(!rows$complete_score_pair),
+      row.names = NULL
+    )
+  }
+))
+rownames(age_super_zero_event_link) &lt;- NULL
+
+age_pair_status &lt;- expand.grid(
+  replicate = seq_len(n_boot),
+  method = c(&quot;Supermodel&quot;, &quot;Disjoint&quot;),
+  landmark = age_landmarks,
+  stringsAsFactors = FALSE
+)
+complete_age_pairs &lt;- paired_bootstrap[
+  paired_bootstrap$scale == &quot;Attained age&quot;,
+  c(&quot;replicate&quot;, &quot;method&quot;, &quot;landmark&quot;)
+]
+complete_age_pairs$complete_score_pair &lt;- TRUE
+age_pair_status &lt;- merge(
+  age_pair_status, complete_age_pairs,
+  by = c(&quot;replicate&quot;, &quot;method&quot;, &quot;landmark&quot;), all.x = TRUE, sort = FALSE
+)
+age_pair_status$complete_score_pair[
+  is.na(age_pair_status$complete_score_pair)
+] &lt;- FALSE
+age_horizon_link &lt;- merge(
+  age_fit_diagnostics, age_pair_status,
+  by = c(&quot;replicate&quot;, &quot;method&quot;, &quot;landmark&quot;), all.x = TRUE, sort = FALSE
+)
+age_horizon_summary &lt;- do.call(rbind, lapply(
+  split(age_horizon_link, list(
+    age_horizon_link$method,
+    age_horizon_link$landmark,
+    age_horizon_link$cause
+  ), drop = TRUE),
+  function(rows) {
+    data.frame(
+      method = rows$method[1L],
+      landmark = rows$landmark[1L],
+      cause = rows$cause[1L],
+      horizon_past_last_event_replicates = sum(
+        rows$horizon_past_last_event
+      ),
+      complete_pairs_despite_past_horizon = sum(
+        rows$horizon_past_last_event &amp; rows$complete_score_pair
+      ),
+      row.names = NULL
+    )
+  }
+))
+rownames(age_horizon_summary) &lt;- NULL
+
+enrollment_super_replicates_retained &lt;- length(unique(
+  paired_bootstrap$replicate[
+    paired_bootstrap$scale == &quot;Enrollment time&quot; &amp;
+      paired_bootstrap$method == &quot;Supermodel&quot; &amp;
+      paired_bootstrap$landmark == enrollment_landmarks[1L]
+  ]
+))
+
+age_performance_pair_counts &lt;- optimism_corrected_performance[
+  optimism_corrected_performance$scale == &quot;Attained age&quot;,
+  c(&quot;method&quot;, &quot;landmark&quot;, &quot;successful_replicates&quot;)
+]
+age_pair_count_validation &lt;- merge(
+  age_score_pair_counts, age_performance_pair_counts,
+  by = c(&quot;method&quot;, &quot;landmark&quot;), all = TRUE, sort = FALSE
+)
+
+stopifnot(
+  nrow(age_stack_diagnostics) == n_boot,
+  age_stack_summary$maximum_age_raw_duplicate_id_lm == 0L,
+  age_stack_summary$maximum_age_model_duplicate_id_lm == 0L,
+  nrow(age_pair_count_validation) == nrow(age_score_pair_counts),
+  all(age_pair_count_validation$complete_score_pairs ==
+        age_pair_count_validation$successful_replicates),
+  enrollment_super_replicates_retained == n_boot
 )</code></pre>
 <pre class="r"><code>knitr::kable(
   optimism_corrected_performance[c(
@@ -6349,6 +6939,1489 @@ knitr::kable(bootstrap_failure_table)</code></pre>
 </tr>
 </tbody>
 </table>
+<div id="age-scale-bootstrap-failure-diagnosis" class="section level3" number="10.3.1">
+<h3><span class="header-section-number">10.3.1</span> Age-scale
+bootstrap failure diagnosis</h3>
+<p>I first instrumented 50 resamples while diagnosing the failure path,
+then retained the same instrumentation for the complete 200-resample run
+reported here. The fit table is cause-specific. The prediction table is
+model-specific because a death cumulative-incidence prediction uses both
+the death and transplant cause-specific fits.</p>
+<pre class="r"><code>zero_transplant_super_replicates &lt;- sum(
+  super_transplant_zero_by_replicate$zero_transplants_in_any_age_window
+)
+zero_transplant_pairs &lt;- age_super_zero_event_link[
+  age_super_zero_event_link$zero_transplants_in_any_age_window,
+]
+zero_transplant_pairs_all_failed &lt;- all(
+  zero_transplant_pairs$complete_score_pairs == 0L
+)
+zero_transplant_resample_word &lt;- if (
+  zero_transplant_super_replicates == 1L
+) &quot;resample&quot; else &quot;resamples&quot;
+whole_replicates_discarded &lt;- n_boot - enrollment_super_replicates_retained
+horizon_flag_has_successes &lt;- any(
+  age_horizon_summary$complete_pairs_despite_past_horizon &gt; 0L
+)
+horizon_success_phrase &lt;- if (horizon_flag_has_successes) {
+  &quot;did occur&quot;
+} else &quot;did not occur&quot;
+age_failure_classification &lt;- if (
+  zero_transplant_super_replicates &gt; 0L &amp;&amp;
+    zero_transplant_pairs_all_failed &amp;&amp;
+    whole_replicates_discarded == 0L
+) {
+  &quot;genuine sparse competing-event fits, not an ID or whole-replicate control-flow bug&quot;
+} else {
+  &quot;not resolved by the recorded diagnostics&quot;
+}
+
+knitr::kable(age_stack_summary)</code></pre>
+<table style="width:100%;">
+<colgroup>
+<col width="13%" />
+<col width="10%" />
+<col width="12%" />
+<col width="21%" />
+<col width="22%" />
+<col width="18%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="right">bootstrap_replicates</th>
+<th align="right">resample_errors</th>
+<th align="right">stack_build_errors</th>
+<th align="right">maximum_age_raw_duplicate_id_lm</th>
+<th align="right">maximum_age_model_duplicate_id_lm</th>
+<th align="right">unexpected_replicate_errors</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">200</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>knitr::kable(age_fit_failure_tally)</code></pre>
+<table>
+<colgroup>
+<col width="4%" />
+<col width="3%" />
+<col width="2%" />
+<col width="9%" />
+<col width="11%" />
+<col width="11%" />
+<col width="8%" />
+<col width="14%" />
+<col width="15%" />
+<col width="9%" />
+<col width="8%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">method</th>
+<th align="right">landmark</th>
+<th align="right">cause</th>
+<th align="right">zero_event_replicates</th>
+<th align="right">model_fit_error_replicates</th>
+<th align="right">cause_fit_error_replicates</th>
+<th align="right">warning_replicates</th>
+<th align="right">nonfinite_coefficient_replicates</th>
+<th align="right">horizon_past_last_event_replicates</th>
+<th align="right">complete_score_pairs</th>
+<th align="right">failed_score_pairs</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="right">1</td>
+<td align="right">0</td>
+<td align="right">6</td>
+<td align="right">1</td>
+<td align="right">20</td>
+<td align="right">199</td>
+<td align="right">200</td>
+<td align="right">0</td>
+<td align="right">200</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="right">2</td>
+<td align="right">2</td>
+<td align="right">6</td>
+<td align="right">3</td>
+<td align="right">112</td>
+<td align="right">197</td>
+<td align="right">198</td>
+<td align="right">0</td>
+<td align="right">200</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="right">1</td>
+<td align="right">0</td>
+<td align="right">10</td>
+<td align="right">10</td>
+<td align="right">132</td>
+<td align="right">93</td>
+<td align="right">8</td>
+<td align="right">63</td>
+<td align="right">137</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="right">2</td>
+<td align="right">2</td>
+<td align="right">10</td>
+<td align="right">0</td>
+<td align="right">34</td>
+<td align="right">2</td>
+<td align="right">0</td>
+<td align="right">63</td>
+<td align="right">137</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="right">2</td>
+<td align="right">0</td>
+<td align="right">34</td>
+<td align="right">4</td>
+<td align="right">90</td>
+<td align="right">0</td>
+<td align="right">200</td>
+<td align="right">140</td>
+<td align="right">60</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="right">1</td>
+<td align="right">30</td>
+<td align="right">34</td>
+<td align="right">0</td>
+<td align="right">170</td>
+<td align="right">30</td>
+<td align="right">170</td>
+<td align="right">140</td>
+<td align="right">60</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="right">2</td>
+<td align="right">0</td>
+<td align="right">10</td>
+<td align="right">0</td>
+<td align="right">34</td>
+<td align="right">2</td>
+<td align="right">0</td>
+<td align="right">60</td>
+<td align="right">140</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="right">1</td>
+<td align="right">30</td>
+<td align="right">10</td>
+<td align="right">10</td>
+<td align="right">132</td>
+<td align="right">93</td>
+<td align="right">74</td>
+<td align="right">60</td>
+<td align="right">140</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="right">1</td>
+<td align="right">74</td>
+<td align="right">74</td>
+<td align="right">0</td>
+<td align="right">126</td>
+<td align="right">74</td>
+<td align="right">126</td>
+<td align="right">123</td>
+<td align="right">77</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="right">2</td>
+<td align="right">0</td>
+<td align="right">74</td>
+<td align="right">0</td>
+<td align="right">28</td>
+<td align="right">0</td>
+<td align="right">200</td>
+<td align="right">123</td>
+<td align="right">77</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="right">1</td>
+<td align="right">74</td>
+<td align="right">10</td>
+<td align="right">10</td>
+<td align="right">132</td>
+<td align="right">93</td>
+<td align="right">200</td>
+<td align="right">60</td>
+<td align="right">140</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="right">2</td>
+<td align="right">0</td>
+<td align="right">10</td>
+<td align="right">0</td>
+<td align="right">34</td>
+<td align="right">2</td>
+<td align="right">200</td>
+<td align="right">60</td>
+<td align="right">140</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>knitr::kable(age_prediction_failure_tally)</code></pre>
+<table>
+<colgroup>
+<col width="4%" />
+<col width="3%" />
+<col width="13%" />
+<col width="13%" />
+<col width="12%" />
+<col width="12%" />
+<col width="12%" />
+<col width="12%" />
+<col width="8%" />
+<col width="7%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">method</th>
+<th align="right">landmark</th>
+<th align="right">train_prediction_error_replicates</th>
+<th align="right">test_prediction_error_replicates</th>
+<th align="right">train_NA_prediction_replicates</th>
+<th align="right">test_NA_prediction_replicates</th>
+<th align="right">train_scoring_error_replicates</th>
+<th align="right">test_scoring_error_replicates</th>
+<th align="right">complete_score_pairs</th>
+<th align="right">failed_score_pairs</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="right">200</td>
+<td align="right">200</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">200</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="right">127</td>
+<td align="right">128</td>
+<td align="right">9</td>
+<td align="right">9</td>
+<td align="right">9</td>
+<td align="right">9</td>
+<td align="right">63</td>
+<td align="right">137</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="right">34</td>
+<td align="right">37</td>
+<td align="right">23</td>
+<td align="right">23</td>
+<td align="right">23</td>
+<td align="right">23</td>
+<td align="right">140</td>
+<td align="right">60</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="right">127</td>
+<td align="right">128</td>
+<td align="right">12</td>
+<td align="right">12</td>
+<td align="right">12</td>
+<td align="right">12</td>
+<td align="right">60</td>
+<td align="right">140</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="right">74</td>
+<td align="right">74</td>
+<td align="right">3</td>
+<td align="right">3</td>
+<td align="right">3</td>
+<td align="right">3</td>
+<td align="right">123</td>
+<td align="right">77</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="right">127</td>
+<td align="right">128</td>
+<td align="right">12</td>
+<td align="right">12</td>
+<td align="right">12</td>
+<td align="right">12</td>
+<td align="right">60</td>
+<td align="right">140</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>knitr::kable(age_failure_reason_tally)</code></pre>
+<table>
+<colgroup>
+<col width="10%" />
+<col width="8%" />
+<col width="9%" />
+<col width="17%" />
+<col width="43%" />
+<col width="10%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">method</th>
+<th align="right">landmark</th>
+<th align="left">cause</th>
+<th align="left">stage</th>
+<th align="left">reason</th>
+<th align="right">replicates</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">12</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">1</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">8</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">199</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">competing-risk fit</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">2</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">111</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">3</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">1</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">197</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">competing-risk fit</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">2</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">event count</td>
+<td align="left">zero events inside the prediction window</td>
+<td align="right">2</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">all rows of newdata have missing values</td>
+<td align="right">194</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">2</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">all rows of newdata have missing values</td>
+<td align="right">194</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">2</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">137</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">33</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">30</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">competing-risk fit</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">30</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">event count</td>
+<td align="left">zero events inside the prediction window</td>
+<td align="right">30</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">50</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">40</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">competing-risk fit</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">30</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">23</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">zero non-NA points</td>
+<td align="right">3</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">30</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">23</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">4</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">23</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">30</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">23</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">111</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">15</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">74</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">competing-risk fit</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">74</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">event count</td>
+<td align="left">zero events inside the prediction window</td>
+<td align="right">74</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">1</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">27</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">2</td>
+<td align="left">competing-risk fit</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">74</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">3</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">74</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">test scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">3</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">3</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">zero-event model returned no coefficient rows</td>
+<td align="right">74</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">train scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">3</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">51</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">81</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">93</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">1</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">15</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">19</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">2</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">2</td>
+<td align="left">event count</td>
+<td align="left">zero events inside the prediction window</td>
+<td align="right">2</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">all rows of newdata have missing values</td>
+<td align="right">94</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">9</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">zero non-NA points</td>
+<td align="right">24</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">test scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">9</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">all rows of newdata have missing values</td>
+<td align="right">94</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">9</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">zero non-NA points</td>
+<td align="right">23</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="left">joint CIF</td>
+<td align="left">train scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">9</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">51</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">81</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">93</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">1</td>
+<td align="left">event count</td>
+<td align="left">zero events inside the prediction window</td>
+<td align="right">30</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">15</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">19</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">2</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">2</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">all rows of newdata have missing values</td>
+<td align="right">94</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">12</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">zero non-NA points</td>
+<td align="right">24</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">test scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">12</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">all rows of newdata have missing values</td>
+<td align="right">94</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">12</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">zero non-NA points</td>
+<td align="right">23</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="left">joint CIF</td>
+<td align="left">train scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">12</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">51</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">81</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">93</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">1</td>
+<td align="left">event count</td>
+<td align="left">zero events inside the prediction window</td>
+<td align="right">74</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">Cox fit did not converge</td>
+<td align="right">15</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more Cox coefficients may be infinite</td>
+<td align="right">19</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">2</td>
+<td align="left">cause-specific fit</td>
+<td align="left">one or more non-finite coefficients</td>
+<td align="right">2</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">2</td>
+<td align="left">competing-risk fit</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">all rows of newdata have missing values</td>
+<td align="right">94</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">12</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">test prediction</td>
+<td align="left">zero non-NA points</td>
+<td align="right">24</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">test scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">12</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">all rows of newdata have missing values</td>
+<td align="right">94</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">Cox Wald calculation had an infinite argument</td>
+<td align="right">10</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">one or more NA risks</td>
+<td align="right">12</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">train prediction</td>
+<td align="left">zero non-NA points</td>
+<td align="right">23</td>
+</tr>
+<tr class="odd">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="left">joint CIF</td>
+<td align="left">train scoring</td>
+<td align="left">NA predictions</td>
+<td align="right">12</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>knitr::kable(age_super_zero_event_link)</code></pre>
+<table>
+<colgroup>
+<col width="9%" />
+<col width="36%" />
+<col width="11%" />
+<col width="22%" />
+<col width="20%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="right">landmark</th>
+<th align="left">zero_transplants_in_any_age_window</th>
+<th align="right">replicates</th>
+<th align="right">complete_score_pairs</th>
+<th align="right">failed_score_pairs</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">41.9</td>
+<td align="left">FALSE</td>
+<td align="right">104</td>
+<td align="right">63</td>
+<td align="right">41</td>
+</tr>
+<tr class="even">
+<td align="right">49.8</td>
+<td align="left">FALSE</td>
+<td align="right">104</td>
+<td align="right">60</td>
+<td align="right">44</td>
+</tr>
+<tr class="odd">
+<td align="right">56.6</td>
+<td align="left">FALSE</td>
+<td align="right">104</td>
+<td align="right">60</td>
+<td align="right">44</td>
+</tr>
+<tr class="even">
+<td align="right">41.9</td>
+<td align="left">TRUE</td>
+<td align="right">96</td>
+<td align="right">0</td>
+<td align="right">96</td>
+</tr>
+<tr class="odd">
+<td align="right">49.8</td>
+<td align="left">TRUE</td>
+<td align="right">96</td>
+<td align="right">0</td>
+<td align="right">96</td>
+</tr>
+<tr class="even">
+<td align="right">56.6</td>
+<td align="left">TRUE</td>
+<td align="right">96</td>
+<td align="right">0</td>
+<td align="right">96</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>knitr::kable(age_horizon_summary)</code></pre>
+<table>
+<colgroup>
+<col width="11%" />
+<col width="9%" />
+<col width="6%" />
+<col width="36%" />
+<col width="37%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">method</th>
+<th align="right">landmark</th>
+<th align="right">cause</th>
+<th align="right">horizon_past_last_event_replicates</th>
+<th align="right">complete_pairs_despite_past_horizon</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="right">1</td>
+<td align="right">200</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="right">1</td>
+<td align="right">8</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="right">1</td>
+<td align="right">170</td>
+<td align="right">140</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="right">1</td>
+<td align="right">74</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="right">1</td>
+<td align="right">126</td>
+<td align="right">123</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="right">1</td>
+<td align="right">200</td>
+<td align="right">60</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">41.9</td>
+<td align="right">2</td>
+<td align="right">198</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">41.9</td>
+<td align="right">2</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">49.8</td>
+<td align="right">2</td>
+<td align="right">200</td>
+<td align="right">140</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">49.8</td>
+<td align="right">2</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Disjoint</td>
+<td align="right">56.6</td>
+<td align="right">2</td>
+<td align="right">200</td>
+<td align="right">123</td>
+</tr>
+<tr class="even">
+<td align="left">Supermodel</td>
+<td align="right">56.6</td>
+<td align="right">2</td>
+<td align="right">200</td>
+<td align="right">60</td>
+</tr>
+</tbody>
+</table>
+<p>All resampled subject copies had distinct analysis identifiers, and
+the maximum duplicate count for <code>(id, LM)</code> was 0. There were
+0 stack-build errors and 0 unexpected replicate errors. The enrollment
+supermodel retained complete pairs from all 200 resamples, so the safety
+wrapper discarded 0 whole replicates when an age component failed.</p>
+<p>The dominant mechanism was sparse transplantation. In 96 resamples,
+at least one age window had no transplants. Every such resample lacked a
+complete age-supermodel score pair at every age landmark. The
+cause-specific table shows the associated convergence warnings and
+non-finite transplant-model coefficients. Because the age supermodel
+uses one competing-risk fit across all landmarks, an undefined
+transplant linear predictor prevents the death cumulative-incidence
+prediction at every landmark; this is why the supermodel success counts
+were nearly uniform. Scoring remained landmark-specific and did not
+discard the other age landmarks when only a score calculation
+failed.</p>
+<p>The horizon check did not explain the failures. Complete score pairs
+did occur in rows whose horizon passed the last observed event,
+consistent with the step-function baseline hazard carrying forward after
+that event. I therefore classified the failure as genuine sparse
+competing-event fits, not an ID or whole-replicate control-flow bug.</p>
+<p>I did not alter the age model or replace failed replicates. The
+optimism-corrected age values are conditional on the subset of resamples
+with finite competing-risk fits and complete train/test scores, so I
+would not use them as primary performance estimates. A future analysis
+could evaluate a denser age grid, a simpler transplant model, or a
+prespecified penalized competing-risk fit, but each would change the
+model and requires its own validation.</p>
 <p>On the current attained-age grid, each landmark already has its own
 baseline because the windows do not overlap. With 3 landmarks and a
 quadratic laboratory basis containing 3 coefficients per laboratory, the
@@ -6356,6 +8429,7 @@ laboratory effects are also effectively saturated across those
 landmarks. The primary attained-age supermodel therefore pools only male
 sex, disease stage, and treatment across landmarks; it cannot show the
 smoothing advantage that would require a denser, overlapping grid.</p>
+</div>
 </div>
 </div>
 <div id="calibration" class="section level1" number="11">
@@ -6471,6 +8545,13 @@ rather than changing a sparse model. The bootstrap likewise reports the
 number of complete resample-and-test pairs for every model and landmark,
 so the corrected performance estimates can be read together with their
 failure counts.</p>
+<p>The bootstrap diagnosis traced the low attained-age completion rate
+to sparse transplant fits, not duplicated bootstrap identifiers or
+whole-replicate loss. Because the death cumulative incidence depends on
+the transplant hazard, a non-finite transplant fit invalidated
+predictions from the shared age supermodel. I therefore treated the
+corrected attained-age performance as conditional and exploratory rather
+than as a primary estimate.</p>
 <p>This attained-age comparison cannot demonstrate smoothing of the
 laboratory effects. Its disjoint windows give each landmark a separate
 baseline, and its quadratic laboratory basis is effectively saturated

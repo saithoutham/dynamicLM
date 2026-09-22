@@ -27,6 +27,7 @@ enrollment_landmarks <- seq(0, 4, by = 1)
 confidence_level <- 0.95
 n_boot <- getOption("timescale.n_boot", 200L)
 bootstrap_seed <- 20260922L
+diagnostic_pilot_replicates <- 50L
 
 stopifnot(
   is.numeric(n_boot), length(n_boot) == 1L,
@@ -1782,7 +1783,11 @@ build_analysis_stacks <- function(longitudinal_data) {
       prediction_key(enrollment_raw$data),
       prediction_key(enrollment_model$data)
     ),
-    identical(prediction_key(age_raw$data), prediction_key(age_model$data))
+    identical(prediction_key(age_raw$data), prediction_key(age_model$data)),
+    anyDuplicated(enrollment_raw$data[c("id", "LM")]) == 0L,
+    anyDuplicated(enrollment_model$data[c("id", "LM")]) == 0L,
+    anyDuplicated(age_raw$data[c("id", "LM")]) == 0L,
+    anyDuplicated(age_model$data[c("id", "LM")]) == 0L
   )
   list(
     enrollment_raw = enrollment_raw, enrollment_model = enrollment_model,
@@ -1796,12 +1801,21 @@ resample_subjects <- function(longitudinal_data, sampled_ids) {
       longitudinal_data$id == sampled_ids[index], , drop = FALSE
     ]
     stopifnot(nrow(subject_rows) > 0L)
+    subject_rows$.bootstrap_source_id <- subject_rows$id
     subject_rows$id <- index
     subject_rows
   })
   out <- do.call(rbind, pieces)
   rownames(out) <- NULL
-  stopifnot(length(unique(out$id)) == length(sampled_ids))
+  stopifnot(
+    length(unique(out$id)) == length(sampled_ids),
+    all(vapply(
+      split(out$.bootstrap_source_id, out$id),
+      function(source_ids) length(unique(source_ids)) == 1L,
+      logical(1L)
+    ))
+  )
+  out$.bootstrap_source_id <- NULL
   out
 }
 
@@ -1812,6 +1826,168 @@ fit_bootstrap_disjoint <- function(lmdata, landmarks, formula) {
       type = "CSC", method = "breslow", x = TRUE
     ))
   }), as.character(landmarks))
+}
+
+bind_non_null <- function(objects) {
+  objects <- objects[!vapply(objects, is.null, logical(1L))]
+  if (length(objects)) do.call(rbind, objects) else NULL
+}
+
+score_prediction_diagnostic <- function(prediction, landmark) {
+  record <- capture_conditions(score(
+    list(Model = prediction), times = landmark,
+    metrics = c("auc", "brier"), id_col = "id",
+    cause = cause_of_interest, summary = FALSE, contrasts = FALSE
+  ))
+  if (inherits(record$value, "error")) {
+    return(list(ok = FALSE, error = conditionMessage(record$value)))
+  }
+  auc <- as.data.frame(record$value$AUC$score)
+  brier <- as.data.frame(record$value$Brier$score)
+  auc <- auc[as.character(auc$model) == "Model", , drop = FALSE]
+  brier <- brier[as.character(brier$model) == "Model", , drop = FALSE]
+  ok <- nrow(auc) == 1L && nrow(brier) == 1L &&
+    is.finite(auc$AUC) && is.finite(brier$Brier)
+  list(ok = ok, error = if (ok) "" else "non-finite or missing score")
+}
+
+direct_age_cause_fit <- function(lmdata, formula, cause) {
+  rhs <- paste(deparse(formula[[3L]]), collapse = "")
+  direct_formula <- as.formula(paste0(
+    "Surv(LM, exit_age, status == ", cause, ") ~ ", rhs
+  ))
+  capture_conditions(survival::coxph(
+    direct_formula, data = lmdata$data, method = "breslow", x = TRUE
+  ))
+}
+
+diagnose_age_fit <- function(fit_record, training_stack, formula, landmarks,
+                             replicate, method) {
+  rows <- list()
+  model_error <- if (inherits(fit_record$value, "error")) {
+    conditionMessage(fit_record$value)
+  } else ""
+
+  for (landmark in landmarks) {
+    one_landmark <- subset_lmdata(training_stack, landmark)
+    for (cause in c(transplant_code, cause_of_interest)) {
+      event_count <- sum(one_landmark$data$status == cause)
+      cause_fit <- NULL
+      coefficient_names <- character()
+      if (!inherits(fit_record$value, "error")) {
+        cause_fit <- extract_cause_fit(fit_record$value, cause)
+        coefficient_names <- names(coef(cause_fit))[!is.finite(coef(cause_fit))]
+      }
+      needs_direct_check <- inherits(fit_record$value, "error") ||
+        length(fit_record$warnings) > 0L || length(coefficient_names) > 0L
+      direct_record <- if (needs_direct_check) {
+        direct_age_cause_fit(training_stack, formula, cause)
+      } else NULL
+      cause_error <- if (!is.null(direct_record) &&
+                         inherits(direct_record$value, "error")) {
+        conditionMessage(direct_record$value)
+      } else ""
+      cause_warning <- if (!is.null(direct_record)) {
+        paste(direct_record$warnings, collapse = " | ")
+      } else ""
+      if (!is.null(direct_record) && !inherits(direct_record$value, "error")) {
+        direct_coefficients <- coef(direct_record$value)
+        coefficient_names <- union(
+          coefficient_names,
+          names(direct_coefficients)[!is.finite(direct_coefficients)]
+        )
+      }
+      cause_event_times <- training_stack$data$exit_age[
+        training_stack$data$status == cause
+      ]
+      last_event_time <- if (length(cause_event_times)) {
+        max(cause_event_times)
+      } else NA_real_
+      horizon <- landmark + prediction_window
+      rows[[length(rows) + 1L]] <- data.frame(
+        replicate = replicate,
+        method = method,
+        landmark = landmark,
+        cause = cause,
+        events = event_count,
+        model_fit_error = model_error,
+        cause_fit_error = cause_error,
+        cause_fit_warning = cause_warning,
+        nonfinite_coefficients = paste(coefficient_names, collapse = ", "),
+        horizon = horizon,
+        last_event_time = last_event_time,
+        horizon_past_last_event = is.finite(last_event_time) &&
+          horizon > last_event_time,
+        row.names = NULL
+      )
+    }
+  }
+  do.call(rbind, rows)
+}
+
+diagnose_age_predictions <- function(fit_record, training_stack, test_stack,
+                                     landmarks, replicate, method) {
+  rows <- list()
+  model_error <- inherits(fit_record$value, "error")
+  predictions <- list()
+  for (sample_name in c("bootstrap_train", "original_test")) {
+    target <- if (sample_name == "bootstrap_train") training_stack else test_stack
+    predictions[[sample_name]] <- if (model_error) {
+      list(value = fit_record$value, warnings = character(), messages = character())
+    } else {
+      capture_conditions(predict(
+        fit_record$value, newdata = target, cause = cause_of_interest,
+        complete = FALSE
+      ))
+    }
+  }
+
+  for (landmark in landmarks) {
+    row <- data.frame(
+      replicate = replicate,
+      method = method,
+      landmark = landmark,
+      train_prediction_error = "",
+      test_prediction_error = "",
+      train_na_predictions = NA_integer_,
+      test_na_predictions = NA_integer_,
+      train_scoring_error = "",
+      test_scoring_error = "",
+      row.names = NULL
+    )
+    for (sample_name in names(predictions)) {
+      prefix <- if (sample_name == "bootstrap_train") "train" else "test"
+      prediction_record <- predictions[[sample_name]]
+      if (inherits(prediction_record$value, "error")) {
+        row[[paste0(prefix, "_prediction_error")]] <-
+          conditionMessage(prediction_record$value)
+        next
+      }
+      prediction <- subset_prediction(prediction_record$value, landmark)
+      na_predictions <- sum(is.na(prediction$preds$risk))
+      row[[paste0(prefix, "_na_predictions")]] <- na_predictions
+      score_record <- if (na_predictions > 0L) {
+        list(ok = FALSE, error = "NA predictions")
+      } else {
+        score_prediction_diagnostic(prediction, landmark)
+      }
+      row[[paste0(prefix, "_scoring_error")]] <- score_record$error
+    }
+    rows[[length(rows) + 1L]] <- row
+  }
+  do.call(rbind, rows)
+}
+
+diagnose_age_model <- function(fit_record, training_stack, test_stack, formula,
+                               landmarks, replicate, method) {
+  list(
+    fit = diagnose_age_fit(
+      fit_record, training_stack, formula, landmarks, replicate, method
+    ),
+    prediction = diagnose_age_predictions(
+      fit_record, training_stack, test_stack, landmarks, replicate, method
+    )
+  )
 }
 
 score_one_prediction <- function(prediction, landmark) {
@@ -1915,10 +2091,50 @@ bootstrap_samples <- lapply(seq_len(n_boot), function(replicate) {
 })
 
 run_bootstrap_replicate <- function(replicate) {
-  bootstrap_long <- resample_subjects(
+  bootstrap_long_record <- capture_conditions(resample_subjects(
     pbc_analysis, bootstrap_samples[[replicate]]
+  ))
+  if (inherits(bootstrap_long_record$value, "error")) {
+    return(list(
+      scores = NULL,
+      stack = data.frame(
+        replicate = replicate,
+        resample_error = conditionMessage(bootstrap_long_record$value),
+        stack_build_error = "",
+        age_raw_duplicate_id_lm = NA_integer_,
+        age_model_duplicate_id_lm = NA_integer_
+      ),
+      fit = NULL, prediction = NULL, unexpected = NULL
+    ))
+  }
+  stacks_record <- capture_conditions(build_analysis_stacks(
+    bootstrap_long_record$value
+  ))
+  if (inherits(stacks_record$value, "error")) {
+    return(list(
+      scores = NULL,
+      stack = data.frame(
+        replicate = replicate,
+        resample_error = "",
+        stack_build_error = conditionMessage(stacks_record$value),
+        age_raw_duplicate_id_lm = NA_integer_,
+        age_model_duplicate_id_lm = NA_integer_
+      ),
+      fit = NULL, prediction = NULL, unexpected = NULL
+    ))
+  }
+  stacks <- stacks_record$value
+  stack_diagnostic <- data.frame(
+    replicate = replicate,
+    resample_error = "",
+    stack_build_error = "",
+    age_raw_duplicate_id_lm = anyDuplicated(
+      stacks$age_raw$data[c("id", "LM")]
+    ),
+    age_model_duplicate_id_lm = anyDuplicated(
+      stacks$age_model$data[c("id", "LM")]
+    )
   )
-  stacks <- build_analysis_stacks(bootstrap_long)
 
   enrollment_super_fit <- capture_conditions(dynamic_lm(
     stacks$enrollment_model, enrollment_formula,
@@ -1936,7 +2152,7 @@ run_bootstrap_replicate <- function(replicate) {
     stacks$age_raw, age_landmarks, age_disjoint_formula
   )
 
-  rows <- list(
+  score_rows <- list(
     evaluate_supermodel_bootstrap(
       enrollment_super_fit, stacks$enrollment_model,
       original_stacks$enrollment_model, enrollment_landmarks,
@@ -1956,8 +2172,32 @@ run_bootstrap_replicate <- function(replicate) {
       age_landmarks, replicate, "Attained age"
     )
   )
-  rows <- rows[!vapply(rows, is.null, logical(1L))]
-  if (length(rows)) do.call(rbind, rows) else NULL
+  super_diagnostic <- diagnose_age_model(
+    age_super_fit, stacks$age_model, original_stacks$age_model,
+    age_formula, age_landmarks, replicate, "Supermodel"
+  )
+  disjoint_diagnostics <- lapply(age_landmarks, function(landmark) {
+    diagnose_age_model(
+      age_disjoint_fits[[as.character(landmark)]],
+      subset_lmdata(stacks$age_raw, landmark),
+      subset_lmdata(original_stacks$age_raw, landmark),
+      age_disjoint_formula, landmark, replicate, "Disjoint"
+    )
+  })
+
+  list(
+    scores = bind_non_null(score_rows),
+    stack = stack_diagnostic,
+    fit = bind_non_null(c(
+      list(super_diagnostic$fit),
+      lapply(disjoint_diagnostics, `[[`, "fit")
+    )),
+    prediction = bind_non_null(c(
+      list(super_diagnostic$prediction),
+      lapply(disjoint_diagnostics, `[[`, "prediction")
+    )),
+    unexpected = NULL
+  )
 }
 
 bootstrap_cores <- getOption(
@@ -1965,7 +2205,17 @@ bootstrap_cores <- getOption(
   if (.Platform$OS.type == "windows") 1L else min(4L, parallel::detectCores(logical = FALSE))
 )
 safe_bootstrap_replicate <- function(replicate) {
-  tryCatch(run_bootstrap_replicate(replicate), error = function(error) NULL)
+  tryCatch(
+    run_bootstrap_replicate(replicate),
+    error = function(error) list(
+      scores = NULL, stack = NULL, fit = NULL, prediction = NULL,
+      unexpected = data.frame(
+        replicate = replicate,
+        error = conditionMessage(error),
+        row.names = NULL
+      )
+    )
+  )
 }
 if (.Platform$OS.type == "windows" || bootstrap_cores <= 1L) {
   bootstrap_results <- lapply(seq_len(n_boot), safe_bootstrap_replicate)
@@ -1975,10 +2225,16 @@ if (.Platform$OS.type == "windows" || bootstrap_cores <= 1L) {
     mc.cores = bootstrap_cores, mc.preschedule = FALSE
   )
 }
-bootstrap_results <- bootstrap_results[
-  !vapply(bootstrap_results, is.null, logical(1L))
-]
-bootstrap_scores <- do.call(rbind, bootstrap_results)
+bootstrap_scores <- bind_non_null(lapply(bootstrap_results, `[[`, "scores"))
+age_stack_diagnostics <- bind_non_null(lapply(bootstrap_results, `[[`, "stack"))
+age_fit_diagnostics <- bind_non_null(lapply(bootstrap_results, `[[`, "fit"))
+age_prediction_diagnostics <- bind_non_null(lapply(
+  bootstrap_results, `[[`, "prediction"
+))
+unexpected_bootstrap_errors <- bind_non_null(lapply(
+  bootstrap_results, `[[`, "unexpected"
+))
+stopifnot(!is.null(bootstrap_scores))
 rownames(bootstrap_scores) <- NULL
 
 bootstrap_train <- bootstrap_scores[
@@ -2044,6 +2300,340 @@ stopifnot(
       optimism_corrected_performance$failed_replicates == n_boot
   )
 )
+
+age_stack_summary <- data.frame(
+  bootstrap_replicates = n_boot,
+  resample_errors = sum(nzchar(age_stack_diagnostics$resample_error)),
+  stack_build_errors = sum(nzchar(age_stack_diagnostics$stack_build_error)),
+  maximum_age_raw_duplicate_id_lm = max(
+    age_stack_diagnostics$age_raw_duplicate_id_lm, na.rm = TRUE
+  ),
+  maximum_age_model_duplicate_id_lm = max(
+    age_stack_diagnostics$age_model_duplicate_id_lm, na.rm = TRUE
+  ),
+  unexpected_replicate_errors = if (is.null(unexpected_bootstrap_errors)) {
+    0L
+  } else nrow(unexpected_bootstrap_errors),
+  row.names = NULL
+)
+
+age_score_pair_counts <- aggregate(
+  replicate ~ method + landmark,
+  paired_bootstrap[paired_bootstrap$scale == "Attained age", ],
+  function(replicates) length(unique(replicates))
+)
+names(age_score_pair_counts)[names(age_score_pair_counts) == "replicate"] <-
+  "complete_score_pairs"
+age_score_pair_grid <- expand.grid(
+  method = c("Supermodel", "Disjoint"),
+  landmark = age_landmarks,
+  stringsAsFactors = FALSE
+)
+age_score_pair_counts <- merge(
+  age_score_pair_grid, age_score_pair_counts,
+  by = c("method", "landmark"), all.x = TRUE, sort = FALSE
+)
+age_score_pair_counts$complete_score_pairs[
+  is.na(age_score_pair_counts$complete_score_pairs)
+] <- 0L
+age_score_pair_counts$failed_score_pairs <-
+  n_boot - age_score_pair_counts$complete_score_pairs
+
+age_fit_failure_tally <- do.call(rbind, lapply(
+  split(age_fit_diagnostics, list(
+    age_fit_diagnostics$method,
+    age_fit_diagnostics$landmark,
+    age_fit_diagnostics$cause
+  ), drop = TRUE),
+  function(rows) {
+    data.frame(
+      method = rows$method[1L],
+      landmark = rows$landmark[1L],
+      cause = rows$cause[1L],
+      zero_event_replicates = sum(rows$events == 0L),
+      model_fit_error_replicates = sum(nzchar(rows$model_fit_error)),
+      cause_fit_error_replicates = sum(nzchar(rows$cause_fit_error)),
+      warning_replicates = sum(nzchar(rows$cause_fit_warning)),
+      nonfinite_coefficient_replicates = sum(
+        nzchar(rows$nonfinite_coefficients)
+      ),
+      horizon_past_last_event_replicates = sum(
+        rows$horizon_past_last_event
+      ),
+      row.names = NULL
+    )
+  }
+))
+age_fit_failure_tally <- merge(
+  age_fit_failure_tally, age_score_pair_counts,
+  by = c("method", "landmark"), all.x = TRUE, sort = FALSE
+)
+rownames(age_fit_failure_tally) <- NULL
+
+age_prediction_failure_tally <- do.call(rbind, lapply(
+  split(age_prediction_diagnostics, list(
+    age_prediction_diagnostics$method,
+    age_prediction_diagnostics$landmark
+  ), drop = TRUE),
+  function(rows) {
+    data.frame(
+      method = rows$method[1L],
+      landmark = rows$landmark[1L],
+      train_prediction_error_replicates = sum(nzchar(
+        rows$train_prediction_error
+      )),
+      test_prediction_error_replicates = sum(nzchar(
+        rows$test_prediction_error
+      )),
+      train_NA_prediction_replicates = sum(
+        rows$train_na_predictions > 0L, na.rm = TRUE
+      ),
+      test_NA_prediction_replicates = sum(
+        rows$test_na_predictions > 0L, na.rm = TRUE
+      ),
+      train_scoring_error_replicates = sum(nzchar(
+        rows$train_scoring_error
+      )),
+      test_scoring_error_replicates = sum(nzchar(
+        rows$test_scoring_error
+      )),
+      row.names = NULL
+    )
+  }
+))
+age_prediction_failure_tally <- merge(
+  age_prediction_failure_tally, age_score_pair_counts,
+  by = c("method", "landmark"), all.x = TRUE, sort = FALSE
+)
+rownames(age_prediction_failure_tally) <- NULL
+
+failure_reason_rows <- list()
+normalize_failure_reason <- function(reason) {
+  if (grepl("^arguments imply differing number of rows:", reason)) {
+    return("zero-event model returned no coefficient rows")
+  }
+  if (grepl("infinite argument in coxph.wtest", reason, fixed = TRUE)) {
+    return("Cox Wald calculation had an infinite argument")
+  }
+  if (grepl("Ran out of iterations", reason, fixed = TRUE)) {
+    return("Cox fit did not converge")
+  }
+  if (grepl("beta may be infinite", reason, fixed = TRUE)) {
+    return("one or more Cox coefficients may be infinite")
+  }
+  reason
+}
+append_failure_reason <- function(method, landmark, cause, stage, reason) {
+  failure_reason_rows[[length(failure_reason_rows) + 1L]] <<- data.frame(
+    method = method,
+    landmark = landmark,
+    cause = as.character(cause),
+    stage = stage,
+    reason = normalize_failure_reason(reason),
+    stringsAsFactors = FALSE
+  )
+}
+for (row_index in seq_len(nrow(age_fit_diagnostics))) {
+  row <- age_fit_diagnostics[row_index, ]
+  if (row$events == 0L) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      "event count", "zero events inside the prediction window"
+    )
+  }
+  if (nzchar(row$model_fit_error)) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      "competing-risk fit", row$model_fit_error
+    )
+  }
+  if (nzchar(row$cause_fit_error)) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      "cause-specific fit", row$cause_fit_error
+    )
+  }
+  if (nzchar(row$cause_fit_warning)) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      "cause-specific fit", row$cause_fit_warning
+    )
+  }
+  if (nzchar(row$nonfinite_coefficients)) {
+    append_failure_reason(
+      row$method, row$landmark, row$cause,
+      "cause-specific fit",
+      "one or more non-finite coefficients"
+    )
+  }
+}
+for (row_index in seq_len(nrow(age_prediction_diagnostics))) {
+  row <- age_prediction_diagnostics[row_index, ]
+  prediction_fields <- c(
+    train_prediction_error = "train prediction",
+    test_prediction_error = "test prediction",
+    train_scoring_error = "train scoring",
+    test_scoring_error = "test scoring"
+  )
+  for (field in names(prediction_fields)) {
+    if (nzchar(row[[field]])) {
+      append_failure_reason(
+        row$method, row$landmark, "joint CIF",
+        unname(prediction_fields[field]), row[[field]]
+      )
+    }
+  }
+  if (is.finite(row$train_na_predictions) && row$train_na_predictions > 0L) {
+    append_failure_reason(
+      row$method, row$landmark, "joint CIF",
+      "train prediction", "one or more NA risks"
+    )
+  }
+  if (is.finite(row$test_na_predictions) && row$test_na_predictions > 0L) {
+    append_failure_reason(
+      row$method, row$landmark, "joint CIF",
+      "test prediction", "one or more NA risks"
+    )
+  }
+}
+age_failure_reason_tally <- aggregate(
+  list(replicates = rep(1L, length(failure_reason_rows))),
+  by = do.call(rbind, failure_reason_rows),
+  FUN = sum
+)
+age_failure_reason_tally <- age_failure_reason_tally[
+  order(
+    age_failure_reason_tally$method,
+    age_failure_reason_tally$landmark,
+    age_failure_reason_tally$cause,
+    age_failure_reason_tally$stage,
+    age_failure_reason_tally$reason
+  ),
+]
+rownames(age_failure_reason_tally) <- NULL
+
+super_transplant_zero_by_replicate <- aggregate(
+  events ~ replicate,
+  age_fit_diagnostics[
+    age_fit_diagnostics$method == "Supermodel" &
+      age_fit_diagnostics$cause == transplant_code,
+  ],
+  function(events) any(events == 0L)
+)
+names(super_transplant_zero_by_replicate)[2L] <-
+  "zero_transplants_in_any_age_window"
+age_super_pair_grid <- expand.grid(
+  replicate = seq_len(n_boot),
+  landmark = age_landmarks,
+  stringsAsFactors = FALSE
+)
+age_super_complete_pairs <- paired_bootstrap[
+  paired_bootstrap$scale == "Attained age" &
+    paired_bootstrap$method == "Supermodel",
+  c("replicate", "landmark")
+]
+age_super_complete_pairs$complete_score_pair <- TRUE
+age_super_pair_grid <- merge(
+  age_super_pair_grid, age_super_complete_pairs,
+  by = c("replicate", "landmark"), all.x = TRUE, sort = FALSE
+)
+age_super_pair_grid$complete_score_pair[
+  is.na(age_super_pair_grid$complete_score_pair)
+] <- FALSE
+age_super_pair_grid <- merge(
+  age_super_pair_grid, super_transplant_zero_by_replicate,
+  by = "replicate", all.x = TRUE, sort = FALSE
+)
+age_super_zero_event_link <- do.call(rbind, lapply(
+  split(age_super_pair_grid, list(
+    age_super_pair_grid$landmark,
+    age_super_pair_grid$zero_transplants_in_any_age_window
+  ), drop = TRUE),
+  function(rows) {
+    data.frame(
+      landmark = rows$landmark[1L],
+      zero_transplants_in_any_age_window =
+        rows$zero_transplants_in_any_age_window[1L],
+      replicates = nrow(rows),
+      complete_score_pairs = sum(rows$complete_score_pair),
+      failed_score_pairs = sum(!rows$complete_score_pair),
+      row.names = NULL
+    )
+  }
+))
+rownames(age_super_zero_event_link) <- NULL
+
+age_pair_status <- expand.grid(
+  replicate = seq_len(n_boot),
+  method = c("Supermodel", "Disjoint"),
+  landmark = age_landmarks,
+  stringsAsFactors = FALSE
+)
+complete_age_pairs <- paired_bootstrap[
+  paired_bootstrap$scale == "Attained age",
+  c("replicate", "method", "landmark")
+]
+complete_age_pairs$complete_score_pair <- TRUE
+age_pair_status <- merge(
+  age_pair_status, complete_age_pairs,
+  by = c("replicate", "method", "landmark"), all.x = TRUE, sort = FALSE
+)
+age_pair_status$complete_score_pair[
+  is.na(age_pair_status$complete_score_pair)
+] <- FALSE
+age_horizon_link <- merge(
+  age_fit_diagnostics, age_pair_status,
+  by = c("replicate", "method", "landmark"), all.x = TRUE, sort = FALSE
+)
+age_horizon_summary <- do.call(rbind, lapply(
+  split(age_horizon_link, list(
+    age_horizon_link$method,
+    age_horizon_link$landmark,
+    age_horizon_link$cause
+  ), drop = TRUE),
+  function(rows) {
+    data.frame(
+      method = rows$method[1L],
+      landmark = rows$landmark[1L],
+      cause = rows$cause[1L],
+      horizon_past_last_event_replicates = sum(
+        rows$horizon_past_last_event
+      ),
+      complete_pairs_despite_past_horizon = sum(
+        rows$horizon_past_last_event & rows$complete_score_pair
+      ),
+      row.names = NULL
+    )
+  }
+))
+rownames(age_horizon_summary) <- NULL
+
+enrollment_super_replicates_retained <- length(unique(
+  paired_bootstrap$replicate[
+    paired_bootstrap$scale == "Enrollment time" &
+      paired_bootstrap$method == "Supermodel" &
+      paired_bootstrap$landmark == enrollment_landmarks[1L]
+  ]
+))
+
+age_performance_pair_counts <- optimism_corrected_performance[
+  optimism_corrected_performance$scale == "Attained age",
+  c("method", "landmark", "successful_replicates")
+]
+age_pair_count_validation <- merge(
+  age_score_pair_counts, age_performance_pair_counts,
+  by = c("method", "landmark"), all = TRUE, sort = FALSE
+)
+
+stopifnot(
+  nrow(age_stack_diagnostics) == n_boot,
+  age_stack_summary$maximum_age_raw_duplicate_id_lm == 0L,
+  age_stack_summary$maximum_age_model_duplicate_id_lm == 0L,
+  nrow(age_pair_count_validation) == nrow(age_score_pair_counts),
+  all(age_pair_count_validation$complete_score_pairs ==
+        age_pair_count_validation$successful_replicates),
+  enrollment_super_replicates_retained == n_boot
+)
 ```
 
 ```{r optimism-corrected-performance-table}
@@ -2068,6 +2658,85 @@ bootstrap_failure_table <- optimism_corrected_performance[c(
 )]
 knitr::kable(bootstrap_failure_table)
 ```
+
+### Age-scale bootstrap failure diagnosis
+
+I first instrumented `r diagnostic_pilot_replicates` resamples while diagnosing
+the failure path, then retained the same instrumentation for the complete
+`r n_boot`-resample run reported here. The fit table is cause-specific. The
+prediction table is model-specific because a death cumulative-incidence
+prediction uses both the death and transplant cause-specific fits.
+
+```{r age-bootstrap-diagnostic-tables}
+zero_transplant_super_replicates <- sum(
+  super_transplant_zero_by_replicate$zero_transplants_in_any_age_window
+)
+zero_transplant_pairs <- age_super_zero_event_link[
+  age_super_zero_event_link$zero_transplants_in_any_age_window,
+]
+zero_transplant_pairs_all_failed <- all(
+  zero_transplant_pairs$complete_score_pairs == 0L
+)
+zero_transplant_resample_word <- if (
+  zero_transplant_super_replicates == 1L
+) "resample" else "resamples"
+whole_replicates_discarded <- n_boot - enrollment_super_replicates_retained
+horizon_flag_has_successes <- any(
+  age_horizon_summary$complete_pairs_despite_past_horizon > 0L
+)
+horizon_success_phrase <- if (horizon_flag_has_successes) {
+  "did occur"
+} else "did not occur"
+age_failure_classification <- if (
+  zero_transplant_super_replicates > 0L &&
+    zero_transplant_pairs_all_failed &&
+    whole_replicates_discarded == 0L
+) {
+  "genuine sparse competing-event fits, not an ID or whole-replicate control-flow bug"
+} else {
+  "not resolved by the recorded diagnostics"
+}
+
+knitr::kable(age_stack_summary)
+knitr::kable(age_fit_failure_tally)
+knitr::kable(age_prediction_failure_tally)
+knitr::kable(age_failure_reason_tally)
+knitr::kable(age_super_zero_event_link)
+knitr::kable(age_horizon_summary)
+```
+
+All resampled subject copies had distinct analysis identifiers, and the maximum
+duplicate count for `(id, LM)` was
+`r age_stack_summary$maximum_age_model_duplicate_id_lm`. There were
+`r age_stack_summary$stack_build_errors` stack-build errors and
+`r age_stack_summary$unexpected_replicate_errors` unexpected replicate errors.
+The enrollment supermodel retained complete pairs from all `r n_boot`
+resamples, so the safety wrapper discarded `r whole_replicates_discarded` whole
+replicates when an age component failed.
+
+The dominant mechanism was sparse transplantation. In
+`r zero_transplant_super_replicates` `r zero_transplant_resample_word`, at least
+one age window had no transplants. Every such resample lacked a complete
+age-supermodel score pair at
+every age landmark. The cause-specific table shows the associated convergence
+warnings and non-finite transplant-model coefficients. Because the age
+supermodel uses one competing-risk fit across all landmarks, an undefined
+transplant linear predictor prevents the death cumulative-incidence prediction
+at every landmark; this is why the supermodel success counts were nearly
+uniform. Scoring remained landmark-specific and did not discard the other age
+landmarks when only a score calculation failed.
+
+The horizon check did not explain the failures. Complete score pairs
+`r horizon_success_phrase` in rows whose horizon passed the last observed event,
+consistent with the step-function baseline hazard carrying forward after that
+event. I therefore classified the failure as `r age_failure_classification`.
+
+I did not alter the age model or replace failed replicates. The optimism-corrected
+age values are conditional on the subset of resamples with finite competing-risk
+fits and complete train/test scores, so I would not use them as primary
+performance estimates. A future analysis could evaluate a denser age grid, a
+simpler transplant model, or a prespecified penalized competing-risk fit, but
+each would change the model and requires its own validation.
 
 On the current attained-age grid, each landmark already has its own baseline
 because the windows do not overlap. With `r length(age_landmarks)` landmarks
@@ -2175,6 +2844,13 @@ and I left unavailable predictions missing rather than changing a sparse model.
 The bootstrap likewise reports the number of complete resample-and-test pairs
 for every model and landmark, so the corrected performance estimates can be
 read together with their failure counts.
+
+The bootstrap diagnosis traced the low attained-age completion rate to sparse
+transplant fits, not duplicated bootstrap identifiers or whole-replicate loss.
+Because the death cumulative incidence depends on the transplant hazard, a
+non-finite transplant fit invalidated predictions from the shared age
+supermodel. I therefore treated the corrected attained-age performance as
+conditional and exploratory rather than as a primary estimate.
 
 This attained-age comparison cannot demonstrate smoothing of the laboratory
 effects. Its disjoint windows give each landmark a separate baseline, and its
