@@ -619,6 +619,14 @@ enrollment_fit <- enrollment_fit_record$value
 age_fit <- age_fit_record$value
 ```
 
+The primary attained-age formula included bilirubin-by-LM and albumin-by-LM
+interactions but no LM main effect. The attained-age landmarks were more than
+`r prediction_window` years apart, so their prediction windows did not overlap
+and every Cox risk set came from one landmark. LM was therefore constant within
+each risk set and could not be separated from the age-scale baseline hazard.
+The diagnostic fit below added `LM1 + LM2` to a fresh stack and returned both
+terms as non-estimable.
+
 ## Why the primary age model has no LM main effect
 
 The age windows were disjoint, whereas the enrollment windows overlapped. I
@@ -2745,6 +2753,253 @@ coefficients per laboratory, the laboratory effects are also effectively
 saturated across those landmarks. The primary attained-age supermodel therefore
 pools only male sex, disease stage, and treatment across landmarks; it cannot
 show the smoothing advantage that would require a denser, overlapping grid.
+
+## Paired supermodel-minus-disjoint performance differences
+
+I paired the two methods within bootstrap replicate and landmark, retaining a
+replicate only when both methods had complete bootstrap-resample and
+original-cohort scores. A positive AUC difference or a negative Brier
+difference favors the supermodel. The percentile interval is the 2.5th and
+97.5th percentiles of the replicate-specific optimism-corrected difference on
+that common set of paired resamples.
+
+```{r paired-performance-differences}
+paired_supermodel_scores <- paired_bootstrap[
+  paired_bootstrap$method == "Supermodel",
+  c(
+    "replicate", "scale", "landmark",
+    "AUC_train", "AUC_test", "Brier_train", "Brier_test"
+  )
+]
+paired_disjoint_scores <- paired_bootstrap[
+  paired_bootstrap$method == "Disjoint",
+  c(
+    "replicate", "scale", "landmark",
+    "AUC_train", "AUC_test", "Brier_train", "Brier_test"
+  )
+]
+paired_method_scores <- merge(
+  paired_supermodel_scores,
+  paired_disjoint_scores,
+  by = c("replicate", "scale", "landmark"),
+  suffixes = c("_supermodel", "_disjoint"),
+  sort = FALSE
+)
+
+stopifnot(!anyDuplicated(
+  paired_method_scores[c("replicate", "scale", "landmark")]
+))
+
+apparent_supermodel <- apparent_performance[
+  apparent_performance$method == "Supermodel",
+  c("scale", "landmark", "AUC", "Brier")
+]
+apparent_disjoint <- apparent_performance[
+  apparent_performance$method == "Disjoint",
+  c("scale", "landmark", "AUC", "Brier")
+]
+apparent_method_difference <- merge(
+  apparent_supermodel,
+  apparent_disjoint,
+  by = c("scale", "landmark"),
+  suffixes = c("_supermodel", "_disjoint"),
+  all = TRUE,
+  sort = FALSE
+)
+apparent_method_difference$apparent_AUC_difference <- with(
+  apparent_method_difference, AUC_supermodel - AUC_disjoint
+)
+apparent_method_difference$apparent_Brier_difference <- with(
+  apparent_method_difference, Brier_supermodel - Brier_disjoint
+)
+
+performance_difference_grid <- rbind(
+  data.frame(
+    scale = "Enrollment time",
+    landmark = enrollment_landmarks,
+    stringsAsFactors = FALSE
+  ),
+  data.frame(
+    scale = "Attained age",
+    landmark = age_landmarks,
+    stringsAsFactors = FALSE
+  )
+)
+performance_difference_grid <- merge(
+  performance_difference_grid,
+  apparent_method_difference[c(
+    "scale", "landmark", "apparent_AUC_difference",
+    "apparent_Brier_difference"
+  )],
+  by = c("scale", "landmark"),
+  all.x = TRUE,
+  sort = FALSE
+)
+
+paired_difference_rows <- lapply(
+  split(
+    paired_method_scores,
+    list(paired_method_scores$scale, paired_method_scores$landmark),
+    drop = TRUE
+  ),
+  function(rows) {
+    apparent_row <- performance_difference_grid[
+      performance_difference_grid$scale == rows$scale[1L] &
+        performance_difference_grid$landmark == rows$landmark[1L],
+    ]
+    stopifnot(nrow(apparent_row) == 1L)
+
+    auc_optimism_difference <- with(
+      rows,
+      (AUC_train_supermodel - AUC_test_supermodel) -
+        (AUC_train_disjoint - AUC_test_disjoint)
+    )
+    brier_optimism_difference <- with(
+      rows,
+      (Brier_train_supermodel - Brier_test_supermodel) -
+        (Brier_train_disjoint - Brier_test_disjoint)
+    )
+    corrected_auc_by_replicate <-
+      apparent_row$apparent_AUC_difference - auc_optimism_difference
+    corrected_brier_by_replicate <-
+      apparent_row$apparent_Brier_difference - brier_optimism_difference
+
+    data.frame(
+      scale = rows$scale[1L],
+      landmark = rows$landmark[1L],
+      paired_replicates = length(unique(rows$replicate)),
+      optimism_corrected_AUC_difference = mean(corrected_auc_by_replicate),
+      AUC_difference_lower = unname(quantile(
+        corrected_auc_by_replicate, 0.025, names = FALSE
+      )),
+      AUC_difference_upper = unname(quantile(
+        corrected_auc_by_replicate, 0.975, names = FALSE
+      )),
+      optimism_corrected_Brier_difference = mean(corrected_brier_by_replicate),
+      Brier_difference_lower = unname(quantile(
+        corrected_brier_by_replicate, 0.025, names = FALSE
+      )),
+      Brier_difference_upper = unname(quantile(
+        corrected_brier_by_replicate, 0.975, names = FALSE
+      )),
+      row.names = NULL
+    )
+  }
+)
+paired_performance_differences <- if (length(paired_difference_rows)) {
+  do.call(rbind, paired_difference_rows)
+} else {
+  data.frame()
+}
+
+performance_differences <- merge(
+  performance_difference_grid,
+  paired_performance_differences,
+  by = c("scale", "landmark"),
+  all.x = TRUE,
+  sort = FALSE
+)
+performance_differences$paired_replicates[
+  is.na(performance_differences$paired_replicates)
+] <- 0L
+performance_differences <- performance_differences[order(
+  match(performance_differences$scale, c("Enrollment time", "Attained age")),
+  performance_differences$landmark
+), ]
+rownames(performance_differences) <- NULL
+performance_differences$scale_display <- ifelse(
+  performance_differences$scale == "Attained age",
+  "Attained age (conditional on finite fits)",
+  performance_differences$scale
+)
+
+format_difference_interval <- function(estimate, lower, upper) {
+  ifelse(
+    is.finite(estimate) & is.finite(lower) & is.finite(upper),
+    sprintf("%.4f (%.4f, %.4f)", estimate, lower, upper),
+    "—"
+  )
+}
+performance_difference_display <- data.frame(
+  scale = performance_differences$scale_display,
+  landmark = performance_differences$landmark,
+  apparent_AUC_difference = ifelse(
+    is.finite(performance_differences$apparent_AUC_difference),
+    sprintf("%.4f", performance_differences$apparent_AUC_difference),
+    "—"
+  ),
+  corrected_AUC_difference_95_percentile_interval =
+    format_difference_interval(
+      performance_differences$optimism_corrected_AUC_difference,
+      performance_differences$AUC_difference_lower,
+      performance_differences$AUC_difference_upper
+    ),
+  apparent_Brier_difference = ifelse(
+    is.finite(performance_differences$apparent_Brier_difference),
+    sprintf("%.4f", performance_differences$apparent_Brier_difference),
+    "—"
+  ),
+  corrected_Brier_difference_95_percentile_interval =
+    format_difference_interval(
+      performance_differences$optimism_corrected_Brier_difference,
+      performance_differences$Brier_difference_lower,
+      performance_differences$Brier_difference_upper
+    ),
+  paired_replicates = performance_differences$paired_replicates,
+  row.names = NULL
+)
+
+stopifnot(
+  nrow(performance_differences) ==
+    length(enrollment_landmarks) + length(age_landmarks),
+  all(performance_differences$paired_replicates >= 0L),
+  all(performance_differences$paired_replicates <= n_boot),
+  all(grepl(
+    "conditional on finite fits",
+    performance_difference_display$scale[
+      performance_differences$scale == "Attained age"
+    ],
+    fixed = TRUE
+  ))
+)
+
+finite_difference_rows <- performance_differences[
+  is.finite(performance_differences$optimism_corrected_AUC_difference) &
+    is.finite(performance_differences$optimism_corrected_Brier_difference),
+]
+auc_point_favors_supermodel <- sum(
+  finite_difference_rows$optimism_corrected_AUC_difference > 0
+)
+brier_point_favors_supermodel <- sum(
+  finite_difference_rows$optimism_corrected_Brier_difference < 0
+)
+auc_intervals_excluding_zero <- sum(
+  finite_difference_rows$AUC_difference_lower > 0 |
+    finite_difference_rows$AUC_difference_upper < 0
+)
+brier_intervals_excluding_zero <- sum(
+  finite_difference_rows$Brier_difference_lower > 0 |
+    finite_difference_rows$Brier_difference_upper < 0
+)
+
+knitr::kable(
+  performance_difference_display,
+  align = c("l", "r", "c", "c", "c", "c", "r"),
+  caption = paste(
+    "Supermodel minus disjoint performance differences.",
+    "Positive AUC differences and negative Brier differences favor the supermodel."
+  )
+)
+```
+
+Among the `r nrow(finite_difference_rows)` landmark comparisons with finite
+paired intervals, the optimism-corrected AUC point estimate favored the
+supermodel in `r auc_point_favors_supermodel`, and the optimism-corrected Brier
+point estimate favored it in `r brier_point_favors_supermodel`. The paired
+interval excluded zero for `r auc_intervals_excluding_zero` AUC comparisons and
+`r brier_intervals_excluding_zero` Brier comparisons. The attained-age rows are
+conditional on finite competing-risk fits for both methods and are therefore
+exploratory.
 
 # Calibration
 

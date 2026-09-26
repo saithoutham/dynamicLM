@@ -2939,6 +2939,14 @@ knitr::kable(fit_condition_table)</code></pre>
 
 enrollment_fit &lt;- enrollment_fit_record$value
 age_fit &lt;- age_fit_record$value</code></pre>
+<p>The primary attained-age formula included bilirubin-by-LM and
+albumin-by-LM interactions but no LM main effect. The attained-age
+landmarks were more than 5 years apart, so their prediction windows did
+not overlap and every Cox risk set came from one landmark. LM was
+therefore constant within each risk set and could not be separated from
+the age-scale baseline hazard. The diagnostic fit below added
+<code>LM1 + LM2</code> to a fresh stack and returned both terms as
+non-estimable.</p>
 <div id="why-the-primary-age-model-has-no-lm-main-effect" class="section level2" number="7.1">
 <h2><span class="header-section-number">7.1</span> Why the primary age
 model has no LM main effect</h2>
@@ -8430,6 +8438,348 @@ landmarks. The primary attained-age supermodel therefore pools only male
 sex, disease stage, and treatment across landmarks; it cannot show the
 smoothing advantage that would require a denser, overlapping grid.</p>
 </div>
+</div>
+<div id="paired-supermodel-minus-disjoint-performance-differences" class="section level2" number="10.4">
+<h2><span class="header-section-number">10.4</span> Paired
+supermodel-minus-disjoint performance differences</h2>
+<p>I paired the two methods within bootstrap replicate and landmark,
+retaining a replicate only when both methods had complete
+bootstrap-resample and original-cohort scores. A positive AUC difference
+or a negative Brier difference favors the supermodel. The percentile
+interval is the 2.5th and 97.5th percentiles of the replicate-specific
+optimism-corrected difference on that common set of paired
+resamples.</p>
+<pre class="r"><code>paired_supermodel_scores &lt;- paired_bootstrap[
+  paired_bootstrap$method == &quot;Supermodel&quot;,
+  c(
+    &quot;replicate&quot;, &quot;scale&quot;, &quot;landmark&quot;,
+    &quot;AUC_train&quot;, &quot;AUC_test&quot;, &quot;Brier_train&quot;, &quot;Brier_test&quot;
+  )
+]
+paired_disjoint_scores &lt;- paired_bootstrap[
+  paired_bootstrap$method == &quot;Disjoint&quot;,
+  c(
+    &quot;replicate&quot;, &quot;scale&quot;, &quot;landmark&quot;,
+    &quot;AUC_train&quot;, &quot;AUC_test&quot;, &quot;Brier_train&quot;, &quot;Brier_test&quot;
+  )
+]
+paired_method_scores &lt;- merge(
+  paired_supermodel_scores,
+  paired_disjoint_scores,
+  by = c(&quot;replicate&quot;, &quot;scale&quot;, &quot;landmark&quot;),
+  suffixes = c(&quot;_supermodel&quot;, &quot;_disjoint&quot;),
+  sort = FALSE
+)
+
+stopifnot(!anyDuplicated(
+  paired_method_scores[c(&quot;replicate&quot;, &quot;scale&quot;, &quot;landmark&quot;)]
+))
+
+apparent_supermodel &lt;- apparent_performance[
+  apparent_performance$method == &quot;Supermodel&quot;,
+  c(&quot;scale&quot;, &quot;landmark&quot;, &quot;AUC&quot;, &quot;Brier&quot;)
+]
+apparent_disjoint &lt;- apparent_performance[
+  apparent_performance$method == &quot;Disjoint&quot;,
+  c(&quot;scale&quot;, &quot;landmark&quot;, &quot;AUC&quot;, &quot;Brier&quot;)
+]
+apparent_method_difference &lt;- merge(
+  apparent_supermodel,
+  apparent_disjoint,
+  by = c(&quot;scale&quot;, &quot;landmark&quot;),
+  suffixes = c(&quot;_supermodel&quot;, &quot;_disjoint&quot;),
+  all = TRUE,
+  sort = FALSE
+)
+apparent_method_difference$apparent_AUC_difference &lt;- with(
+  apparent_method_difference, AUC_supermodel - AUC_disjoint
+)
+apparent_method_difference$apparent_Brier_difference &lt;- with(
+  apparent_method_difference, Brier_supermodel - Brier_disjoint
+)
+
+performance_difference_grid &lt;- rbind(
+  data.frame(
+    scale = &quot;Enrollment time&quot;,
+    landmark = enrollment_landmarks,
+    stringsAsFactors = FALSE
+  ),
+  data.frame(
+    scale = &quot;Attained age&quot;,
+    landmark = age_landmarks,
+    stringsAsFactors = FALSE
+  )
+)
+performance_difference_grid &lt;- merge(
+  performance_difference_grid,
+  apparent_method_difference[c(
+    &quot;scale&quot;, &quot;landmark&quot;, &quot;apparent_AUC_difference&quot;,
+    &quot;apparent_Brier_difference&quot;
+  )],
+  by = c(&quot;scale&quot;, &quot;landmark&quot;),
+  all.x = TRUE,
+  sort = FALSE
+)
+
+paired_difference_rows &lt;- lapply(
+  split(
+    paired_method_scores,
+    list(paired_method_scores$scale, paired_method_scores$landmark),
+    drop = TRUE
+  ),
+  function(rows) {
+    apparent_row &lt;- performance_difference_grid[
+      performance_difference_grid$scale == rows$scale[1L] &amp;
+        performance_difference_grid$landmark == rows$landmark[1L],
+    ]
+    stopifnot(nrow(apparent_row) == 1L)
+
+    auc_optimism_difference &lt;- with(
+      rows,
+      (AUC_train_supermodel - AUC_test_supermodel) -
+        (AUC_train_disjoint - AUC_test_disjoint)
+    )
+    brier_optimism_difference &lt;- with(
+      rows,
+      (Brier_train_supermodel - Brier_test_supermodel) -
+        (Brier_train_disjoint - Brier_test_disjoint)
+    )
+    corrected_auc_by_replicate &lt;-
+      apparent_row$apparent_AUC_difference - auc_optimism_difference
+    corrected_brier_by_replicate &lt;-
+      apparent_row$apparent_Brier_difference - brier_optimism_difference
+
+    data.frame(
+      scale = rows$scale[1L],
+      landmark = rows$landmark[1L],
+      paired_replicates = length(unique(rows$replicate)),
+      optimism_corrected_AUC_difference = mean(corrected_auc_by_replicate),
+      AUC_difference_lower = unname(quantile(
+        corrected_auc_by_replicate, 0.025, names = FALSE
+      )),
+      AUC_difference_upper = unname(quantile(
+        corrected_auc_by_replicate, 0.975, names = FALSE
+      )),
+      optimism_corrected_Brier_difference = mean(corrected_brier_by_replicate),
+      Brier_difference_lower = unname(quantile(
+        corrected_brier_by_replicate, 0.025, names = FALSE
+      )),
+      Brier_difference_upper = unname(quantile(
+        corrected_brier_by_replicate, 0.975, names = FALSE
+      )),
+      row.names = NULL
+    )
+  }
+)
+paired_performance_differences &lt;- if (length(paired_difference_rows)) {
+  do.call(rbind, paired_difference_rows)
+} else {
+  data.frame()
+}
+
+performance_differences &lt;- merge(
+  performance_difference_grid,
+  paired_performance_differences,
+  by = c(&quot;scale&quot;, &quot;landmark&quot;),
+  all.x = TRUE,
+  sort = FALSE
+)
+performance_differences$paired_replicates[
+  is.na(performance_differences$paired_replicates)
+] &lt;- 0L
+performance_differences &lt;- performance_differences[order(
+  match(performance_differences$scale, c(&quot;Enrollment time&quot;, &quot;Attained age&quot;)),
+  performance_differences$landmark
+), ]
+rownames(performance_differences) &lt;- NULL
+performance_differences$scale_display &lt;- ifelse(
+  performance_differences$scale == &quot;Attained age&quot;,
+  &quot;Attained age (conditional on finite fits)&quot;,
+  performance_differences$scale
+)
+
+format_difference_interval &lt;- function(estimate, lower, upper) {
+  ifelse(
+    is.finite(estimate) &amp; is.finite(lower) &amp; is.finite(upper),
+    sprintf(&quot;%.4f (%.4f, %.4f)&quot;, estimate, lower, upper),
+    &quot;—&quot;
+  )
+}
+performance_difference_display &lt;- data.frame(
+  scale = performance_differences$scale_display,
+  landmark = performance_differences$landmark,
+  apparent_AUC_difference = ifelse(
+    is.finite(performance_differences$apparent_AUC_difference),
+    sprintf(&quot;%.4f&quot;, performance_differences$apparent_AUC_difference),
+    &quot;—&quot;
+  ),
+  corrected_AUC_difference_95_percentile_interval =
+    format_difference_interval(
+      performance_differences$optimism_corrected_AUC_difference,
+      performance_differences$AUC_difference_lower,
+      performance_differences$AUC_difference_upper
+    ),
+  apparent_Brier_difference = ifelse(
+    is.finite(performance_differences$apparent_Brier_difference),
+    sprintf(&quot;%.4f&quot;, performance_differences$apparent_Brier_difference),
+    &quot;—&quot;
+  ),
+  corrected_Brier_difference_95_percentile_interval =
+    format_difference_interval(
+      performance_differences$optimism_corrected_Brier_difference,
+      performance_differences$Brier_difference_lower,
+      performance_differences$Brier_difference_upper
+    ),
+  paired_replicates = performance_differences$paired_replicates,
+  row.names = NULL
+)
+
+stopifnot(
+  nrow(performance_differences) ==
+    length(enrollment_landmarks) + length(age_landmarks),
+  all(performance_differences$paired_replicates &gt;= 0L),
+  all(performance_differences$paired_replicates &lt;= n_boot),
+  all(grepl(
+    &quot;conditional on finite fits&quot;,
+    performance_difference_display$scale[
+      performance_differences$scale == &quot;Attained age&quot;
+    ],
+    fixed = TRUE
+  ))
+)
+
+finite_difference_rows &lt;- performance_differences[
+  is.finite(performance_differences$optimism_corrected_AUC_difference) &amp;
+    is.finite(performance_differences$optimism_corrected_Brier_difference),
+]
+auc_point_favors_supermodel &lt;- sum(
+  finite_difference_rows$optimism_corrected_AUC_difference &gt; 0
+)
+brier_point_favors_supermodel &lt;- sum(
+  finite_difference_rows$optimism_corrected_Brier_difference &lt; 0
+)
+auc_intervals_excluding_zero &lt;- sum(
+  finite_difference_rows$AUC_difference_lower &gt; 0 |
+    finite_difference_rows$AUC_difference_upper &lt; 0
+)
+brier_intervals_excluding_zero &lt;- sum(
+  finite_difference_rows$Brier_difference_lower &gt; 0 |
+    finite_difference_rows$Brier_difference_upper &lt; 0
+)
+
+knitr::kable(
+  performance_difference_display,
+  align = c(&quot;l&quot;, &quot;r&quot;, &quot;c&quot;, &quot;c&quot;, &quot;c&quot;, &quot;c&quot;, &quot;r&quot;),
+  caption = paste(
+    &quot;Supermodel minus disjoint performance differences.&quot;,
+    &quot;Positive AUC differences and negative Brier differences favor the supermodel.&quot;
+  )
+)</code></pre>
+<table>
+<caption>Supermodel minus disjoint performance differences. Positive AUC
+differences and negative Brier differences favor the
+supermodel.</caption>
+<colgroup>
+<col width="19%" />
+<col width="4%" />
+<col width="11%" />
+<col width="22%" />
+<col width="12%" />
+<col width="23%" />
+<col width="8%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">scale</th>
+<th align="right">landmark</th>
+<th align="center">apparent_AUC_difference</th>
+<th align="center">corrected_AUC_difference_95_percentile_interval</th>
+<th align="center">apparent_Brier_difference</th>
+<th align="center">corrected_Brier_difference_95_percentile_interval</th>
+<th align="right">paired_replicates</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Enrollment time</td>
+<td align="right">0.0</td>
+<td align="center">-0.0033</td>
+<td align="center">-0.0021 (-0.0137, 0.0136)</td>
+<td align="center">0.0026</td>
+<td align="center">0.0020 (-0.0056, 0.0072)</td>
+<td align="right">200</td>
+</tr>
+<tr class="even">
+<td align="left">Enrollment time</td>
+<td align="right">1.0</td>
+<td align="center">-0.0005</td>
+<td align="center">0.0023 (-0.0077, 0.0169)</td>
+<td align="center">0.0009</td>
+<td align="center">-0.0008 (-0.0069, 0.0030)</td>
+<td align="right">200</td>
+</tr>
+<tr class="odd">
+<td align="left">Enrollment time</td>
+<td align="right">2.0</td>
+<td align="center">0.0000</td>
+<td align="center">0.0027 (-0.0077, 0.0165)</td>
+<td align="center">-0.0030</td>
+<td align="center">-0.0041 (-0.0105, 0.0009)</td>
+<td align="right">200</td>
+</tr>
+<tr class="even">
+<td align="left">Enrollment time</td>
+<td align="right">3.0</td>
+<td align="center">0.0002</td>
+<td align="center">0.0072 (-0.0133, 0.0349)</td>
+<td align="center">0.0061</td>
+<td align="center">0.0019 (-0.0143, 0.0109)</td>
+<td align="right">198</td>
+</tr>
+<tr class="odd">
+<td align="left">Enrollment time</td>
+<td align="right">4.0</td>
+<td align="center">-0.0007</td>
+<td align="center">0.0107 (-0.0284, 0.0573)</td>
+<td align="center">0.0038</td>
+<td align="center">-0.0027 (-0.0251, 0.0153)</td>
+<td align="right">186</td>
+</tr>
+<tr class="even">
+<td align="left">Attained age (conditional on finite fits)</td>
+<td align="right">41.9</td>
+<td align="center">—</td>
+<td align="center">—</td>
+<td align="center">—</td>
+<td align="center">—</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Attained age (conditional on finite fits)</td>
+<td align="right">49.8</td>
+<td align="center">-0.0188</td>
+<td align="center">-0.0100 (-0.2159, 0.1498)</td>
+<td align="center">0.0079</td>
+<td align="center">0.0005 (-0.0397, 0.0454)</td>
+<td align="right">50</td>
+</tr>
+<tr class="even">
+<td align="left">Attained age (conditional on finite fits)</td>
+<td align="right">56.6</td>
+<td align="center">0.0071</td>
+<td align="center">0.0396 (-0.0476, 0.1612)</td>
+<td align="center">0.0032</td>
+<td align="center">-0.0057 (-0.0391, 0.0254)</td>
+<td align="right">59</td>
+</tr>
+</tbody>
+</table>
+<p>Among the 7 landmark comparisons with finite paired intervals, the
+optimism-corrected AUC point estimate favored the supermodel in 5, and
+the optimism-corrected Brier point estimate favored it in 4. The paired
+interval excluded zero for 0 AUC comparisons and 0 Brier comparisons.
+The attained-age rows are conditional on finite competing-risk fits for
+both methods and are therefore exploratory.</p>
 </div>
 </div>
 <div id="calibration" class="section level1" number="11">
