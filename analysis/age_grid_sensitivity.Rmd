@@ -1,5 +1,5 @@
 ---
-title: "PBC attained-age landmark grid: overlap and event-count preflight"
+title: "PBC attained-age landmark sensitivity analysis"
 output:
   html_document:
     self_contained: true
@@ -16,13 +16,19 @@ devtools::load_all(here::here(), quiet = TRUE)
 prediction_window <- 5
 dense_age_landmarks <- seq(42, 56, by = 2)
 cause_labels <- c("Transplant", "Death")
+n_boot <- getOption("dense_age.n_boot", 200L)
+bootstrap_seed <- 20260922L
+stopifnot(length(n_boot) == 1L, is.finite(n_boot),
+          n_boot >= 2L, n_boot == as.integer(n_boot))
+n_boot <- as.integer(n_boot)
 ```
 
 # Purpose
 
 I kept the original time-scale comparison unchanged. This separate analysis
 tests whether a more closely spaced attained-age grid identifies landmark main
-effects and whether its competing-event counts support a bootstrap analysis.
+effects, how its hazard ratios compare with separate landmark fits, and how
+often its predictions survive subject-level resampling.
 The candidate grid is a sensitivity analysis, not a replacement for the
 entry-age-quartile analysis.
 
@@ -260,52 +266,592 @@ competing-risk fit at one age is not.
 dense_disjoint_formula <- Hist(exit_age, status, LM) ~
   male + stage + trt + log_bili_z + albumin_z + cluster(id)
 
-dense_disjoint_conditions <- do.call(rbind, lapply(
+dense_disjoint_records <- setNames(lapply(
   dense_age_landmarks, function(age) {
     one_landmark <- dense_stack_raw
     one_landmark$data <- dense_stack_raw$data[
       dense_stack_raw$data$LM == age, , drop = FALSE
     ]
     one_landmark$end_time <- age
-    fit_record <- capture_conditions(dynamic_lm(
+    capture_conditions(dynamic_lm(
       one_landmark, dense_disjoint_formula,
       type = "CSC", method = "breslow", x = TRUE
     ))
-    data.frame(
-      landmark = age,
-      fit_error = if (inherits(fit_record$value, "error")) {
-        conditionMessage(fit_record$value)
-      } else "",
-      warnings = paste(fit_record$warnings, collapse = " | ")
-    )
-  }
-))
+  }), as.character(dense_age_landmarks)
+)
+dense_disjoint_conditions <- do.call(rbind, lapply(
+  dense_age_landmarks, function(age) {
+    fit_record <- dense_disjoint_records[[as.character(age)]]
+    data.frame(landmark = age,
+               fit_error = if (inherits(fit_record$value, "error")) {
+                 conditionMessage(fit_record$value)
+               } else "",
+               warnings = paste(fit_record$warnings, collapse = " | "))
+  }))
 
 stopifnot(nrow(dense_disjoint_conditions) == length(dense_age_landmarks))
 knitr::kable(dense_disjoint_conditions)
 ```
 
-# Bootstrap decision
+# Death-model laboratory hazard ratios
 
-I did not rerun the full subject bootstrap at this preflight stage. The
-separate-model fit table shows an original-sample failure in a window with no
-transplants. Resampling cannot repair that specification. The pooled fit above
-can still be finite because the overlapping windows and quadratic basis borrow
-information, but that observation is not evidence of complete train/test
-predictions across bootstrap replicates.
-The next decision is whether to retain this grid, trim its sparse end, or
-prespecify a different transplant model. That choice should precede an
-optimism-correction run rather than be made in response to its result.
+I combined each laboratory main effect with its landmark interactions and
+used the fitted robust covariance for the supermodel interval. For each
+separate landmark fit, I used the death-model coefficient and robust standard
+error. CI-width ratios are on the log-HR scale, as in the primary comparison.
+An unavailable separate fit remains unavailable in the table and figure.
 
-```{r bootstrap-preflight}
-bootstrap_preflight <- data.frame(
-  minimum_subjects = min(dense_risk_sets$subjects),
-  minimum_deaths = min(dense_risk_sets$deaths),
-  minimum_transplants = min(dense_risk_sets$transplants),
-  windows_with_zero_transplants = sum(dense_risk_sets$transplants == 0L),
-  full_bootstrap_run = FALSE
+```{r dense-hazard-ratio-table}
+death_index <- match(2L, dense_fit$model$causes)
+stopifnot(length(death_index) == 1L, !is.na(death_index))
+dense_death_fit <- dense_fit$model$models[[death_index]]
+robust_se <- sqrt(diag(vcov(dense_death_fit)))
+summary_se <- summary(dense_death_fit)$coefficients[, "robust se"]
+stopifnot(identical(names(robust_se), names(coef(dense_death_fit))),
+          max(abs(robust_se - summary_se), na.rm = TRUE) < 1e-12)
+
+critical_value <- qnorm(0.975)
+laboratory_terms <- c(log_bili_z = "Log bilirubin (per SD)",
+                      albumin_z = "Albumin (per SD)")
+
+supermodel_log_hr <- function(marker, ages) {
+  terms <- c(marker, paste0(marker, c("_LM1", "_LM2")))
+  design <- cbind(1, dense_basis[[1]](ages), dense_basis[[2]](ages))
+  beta <- coef(dense_death_fit)[terms]
+  covariance <- vcov(dense_death_fit)[terms, terms, drop = FALSE]
+  estimate <- drop(design %*% beta)
+  se <- sqrt(rowSums((design %*% covariance) * design))
+  stopifnot(all(is.finite(estimate)), all(is.finite(se)))
+  data.frame(landmark = ages, estimate = estimate,
+             lower = estimate - critical_value * se,
+             upper = estimate + critical_value * se)
+}
+
+disjoint_log_hr <- function(age, marker) {
+  record <- dense_disjoint_records[[as.character(age)]]
+  if (inherits(record$value, "error")) {
+    return(c(estimate = NA_real_, lower = NA_real_, upper = NA_real_))
+  }
+  cause_index <- match(2L, record$value$model$causes)
+  stopifnot(!is.na(cause_index))
+  fit <- record$value$model$models[[cause_index]]
+  estimate <- coef(fit)[marker]
+  se <- sqrt(diag(vcov(fit)))[marker]
+  if (!is.finite(estimate) || !is.finite(se)) {
+    return(c(estimate = NA_real_, lower = NA_real_, upper = NA_real_))
+  }
+  c(estimate = estimate,
+    lower = estimate - critical_value * se,
+    upper = estimate + critical_value * se)
+}
+
+laboratory_comparison <- do.call(rbind, lapply(names(laboratory_terms),
+  function(marker) {
+    super <- supermodel_log_hr(marker, dense_age_landmarks)
+    separate <- t(vapply(dense_age_landmarks,
+      function(age) disjoint_log_hr(age, marker),
+      c(estimate = 0, lower = 0, upper = 0)))
+    conditions <- dense_disjoint_conditions[
+      match(dense_age_landmarks, dense_disjoint_conditions$landmark), ]
+    data.frame(
+      covariate = unname(laboratory_terms[marker]),
+      landmark = dense_age_landmarks,
+      super_estimate = super$estimate,
+      super_lower = super$lower,
+      super_upper = super$upper,
+      disjoint_estimate = separate[, "estimate"],
+      disjoint_lower = separate[, "lower"],
+      disjoint_upper = separate[, "upper"],
+      CI_width_ratio_log_scale =
+        (separate[, "upper"] - separate[, "lower"]) /
+        (super$upper - super$lower),
+      fit_flag = ifelse(nzchar(conditions$fit_error), "failed",
+                        ifelse(nzchar(conditions$warnings), "warning", "ok")),
+      row.names = NULL
+    )
+  }
+))
+
+format_hr <- function(estimate, lower, upper) {
+  ifelse(is.finite(estimate) & is.finite(lower) & is.finite(upper),
+         sprintf("%.3f (%.3f, %.3f)",
+                 exp(estimate), exp(lower), exp(upper)), "—")
+}
+laboratory_display <- data.frame(
+  covariate = laboratory_comparison$covariate,
+  landmark = laboratory_comparison$landmark,
+  supermodel_HR_95_CI = with(laboratory_comparison,
+    format_hr(super_estimate, super_lower, super_upper)),
+  disjoint_HR_95_CI = with(laboratory_comparison,
+    format_hr(disjoint_estimate, disjoint_lower, disjoint_upper)),
+  disjoint_to_supermodel_CI_width =
+    laboratory_comparison$CI_width_ratio_log_scale,
+  fit_flag = laboratory_comparison$fit_flag
 )
-knitr::kable(bootstrap_preflight)
+stopifnot(nrow(laboratory_display) ==
+            length(dense_age_landmarks) * length(laboratory_terms))
+knitr::kable(laboratory_display, digits = 2)
+
+finite_comparisons <- laboratory_comparison[
+  is.finite(laboratory_comparison$disjoint_estimate), ]
+different_at_each_landmark <- all(abs(
+  finite_comparisons$super_estimate - finite_comparisons$disjoint_estimate
+) > 1e-8)
+cat(if (different_at_each_landmark) {
+  "The quadratic supermodel now smooths: its laboratory HRs do not reproduce the separate-model HRs at any estimable landmark."
+} else {
+  "The quadratic supermodel differs from the separate models at some, but not all, estimable landmarks."
+})
+
+condition_rows <- dense_disjoint_conditions[
+  nzchar(dense_disjoint_conditions$fit_error) |
+    nzchar(dense_disjoint_conditions$warnings), ]
+condition_text <- vapply(seq_len(nrow(condition_rows)), function(index) {
+  row <- condition_rows[index, ]
+  paste0("age ", row$landmark, ": ",
+         paste(c(row$fit_error, row$warnings)[
+           nzchar(c(row$fit_error, row$warnings))], collapse = " | "))
+}, character(1))
+hr_figure_caption <- paste(
+  "Death-model HR per SD of the laboratory measure; shaded band and bars are robust 95% CIs.",
+  "Filled points: unflagged separate fits; open points: warned fits; crosses at the lower axis: failed fits.",
+  "Recorded conditions:", paste(condition_text, collapse = "; ")
+)
+```
+
+```{r dense-hazard-ratio-plot, fig.width=10, fig.height=5, fig.cap=hr_figure_caption}
+plot_laboratory_hr <- function(marker, label) {
+  ages <- seq(min(dense_age_landmarks), max(dense_age_landmarks),
+              length.out = 200L)
+  curve <- supermodel_log_hr(marker, ages)
+  rows <- laboratory_comparison[
+    laboratory_comparison$covariate == label, ]
+  y_values <- exp(c(curve$lower, curve$upper,
+                    rows$disjoint_lower, rows$disjoint_upper, 0))
+  y_limits <- range(y_values[is.finite(y_values) & y_values > 0])
+  plot(ages, exp(curve$estimate), type = "n", log = "y",
+       ylim = y_limits, xlab = "Attained age (years)",
+       ylab = "Hazard ratio (log scale)", main = label, bty = "l")
+  polygon(c(ages, rev(ages)),
+          c(exp(curve$lower), rev(exp(curve$upper))),
+          col = "grey85", border = NA)
+  abline(h = 1, lty = 2, col = "grey45")
+  lines(ages, exp(curve$estimate), lwd = 2)
+  finite <- is.finite(rows$disjoint_estimate) &
+    is.finite(rows$disjoint_lower) & is.finite(rows$disjoint_upper)
+  arrows(rows$landmark[finite], exp(rows$disjoint_lower[finite]),
+         rows$landmark[finite], exp(rows$disjoint_upper[finite]),
+         angle = 90, code = 3, length = 0.04)
+  points(rows$landmark[finite], exp(rows$disjoint_estimate[finite]),
+         pch = ifelse(rows$fit_flag[finite] == "warning", 21, 19),
+         bg = "white")
+  failed <- rows$fit_flag == "failed" | !finite
+  if (any(failed)) {
+    points(rows$landmark[failed], y_limits[1] * 1.05, pch = 4, cex = 1.2)
+  }
+}
+
+old_par <- par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+for (marker in names(laboratory_terms)) {
+  plot_laboratory_hr(marker, unname(laboratory_terms[marker]))
+}
+par(old_par)
+```
+
+# Supermodel prediction and bootstrap
+
+I kept the disjoint fit failures above as findings. For prediction I evaluated
+the pooled supermodel alone. The bootstrap resampled people rather than
+stacked rows, assigned a new ID to each resampled copy, rebuilt the strict
+age stack, refitted both cause-specific hazards, and scored the training and
+original cohorts at each landmark. The grid, window, transformations, and
+seed were fixed before resampling.
+
+```{r dense-bootstrap-functions}
+subset_prediction <- function(prediction, age) {
+  rows <- prediction$data$LM == age
+  if (!any(rows)) stop("No predicted rows at age ", age)
+  out <- prediction
+  out$data <- prediction$data[rows, , drop = FALSE]
+  out$preds <- prediction$preds[rows, , drop = FALSE]
+  stopifnot(nrow(out$data) == nrow(out$preds))
+  out
+}
+
+score_prediction <- function(prediction, age) {
+  if (anyNA(prediction$preds$risk)) {
+    return(list(AUC = NA_real_, Brier = NA_real_,
+                error = "NA predicted risk"))
+  }
+  record <- capture_conditions(score(
+    list(Model = prediction), times = age, metrics = c("auc", "brier"),
+    id_col = "id", cause = 2L, summary = FALSE, contrasts = FALSE
+  ))
+  if (inherits(record$value, "error")) {
+    return(list(AUC = NA_real_, Brier = NA_real_,
+                error = conditionMessage(record$value)))
+  }
+  auc <- as.data.frame(record$value$AUC$score)
+  brier <- as.data.frame(record$value$Brier$score)
+  auc <- auc[as.character(auc$model) == "Model", , drop = FALSE]
+  brier <- brier[as.character(brier$model) == "Model", , drop = FALSE]
+  if (nrow(auc) != 1L || nrow(brier) != 1L ||
+      !is.finite(auc$AUC) || !is.finite(brier$Brier)) {
+    return(list(AUC = NA_real_, Brier = NA_real_,
+                error = "non-finite or missing score"))
+  }
+  list(AUC = auc$AUC, Brier = brier$Brier, error = "")
+}
+
+resample_people <- function(data, sampled_ids) {
+  copies <- lapply(seq_along(sampled_ids), function(index) {
+    rows <- data[data$id == sampled_ids[index], , drop = FALSE]
+    stopifnot(nrow(rows) > 0L)
+    rows$id <- index
+    rows
+  })
+  sample_data <- do.call(rbind, copies)
+  rownames(sample_data) <- NULL
+  stopifnot(length(unique(sample_data$id)) == length(sampled_ids))
+  sample_data
+}
+
+build_dense_stack <- function(data) {
+  raw <- stack_data(
+    data, list(time = "exit_age", status = "status"),
+    lms = dense_age_landmarks, w = prediction_window,
+    covs = list(fixed = c("male", "stage", "trt"),
+                varying = c("log_bili_z", "albumin_z")),
+    format = "long", id = "id", rtime = "visit_age",
+    entry = "entry_age", entry_mode = "strict"
+  )
+  stopifnot(!anyDuplicated(raw$data[c("id", "LM")]),
+            all(raw$data$entry_age <= raw$data$LM))
+  model <- add_interactions(
+    raw, lm_covs = c("log_bili_z", "albumin_z"),
+    func_covars = dense_basis, func_lms = dense_basis
+  )
+  stopifnot(!anyDuplicated(model$data[c("id", "LM")]),
+            identical(raw$data[c("id", "LM")], model$data[c("id", "LM")]))
+  model
+}
+
+empty_bootstrap_rows <- function(replicate) {
+  data.frame(
+    replicate = replicate, landmark = dense_age_landmarks,
+    zero_transplants = NA, zero_deaths = NA,
+    transplant_fit_error = "", transplant_fit_warning = "",
+    death_fit_error = "", death_fit_warning = "",
+    nonfinite_cause = "", pooled_fit_warning = "",
+    train_AUC = NA_real_, test_AUC = NA_real_,
+    train_Brier = NA_real_, test_Brier = NA_real_,
+    failed_step = "", failure_detail = "", complete = FALSE
+  )
+}
+
+diagnose_cause <- function(stack, cause) {
+  formula <- as.formula(paste0(
+    "survival::Surv(LM, exit_age, status == ", cause, ") ~ ",
+    "male + stage + trt + log_bili_z + log_bili_z_LM1 + ",
+    "log_bili_z_LM2 + albumin_z + albumin_z_LM1 + ",
+    "albumin_z_LM2 + LM1 + LM2 + cluster(id)"
+  ))
+  record <- capture_conditions(survival::coxph(
+    formula, data = stack$data, method = "breslow", x = TRUE
+  ))
+  list(
+    error = if (inherits(record$value, "error")) {
+      conditionMessage(record$value)
+    } else "",
+    warning = paste(record$warnings, collapse = " | ")
+  )
+}
+
+original_prediction_record <- capture_conditions(predict(
+  dense_fit, newdata = dense_stack, cause = 2L
+))
+stopifnot(!inherits(original_prediction_record$value, "error"))
+original_prediction <- original_prediction_record$value
+apparent_scores <- do.call(rbind, lapply(dense_age_landmarks, function(age) {
+  metric <- score_prediction(subset_prediction(original_prediction, age), age)
+  data.frame(landmark = age, AUC = metric$AUC, Brier = metric$Brier,
+             score_error = metric$error)
+}))
+stopifnot(all(is.finite(apparent_scores$AUC)),
+          all(is.finite(apparent_scores$Brier)),
+          !any(nzchar(apparent_scores$score_error)))
+knitr::kable(apparent_scores, digits = 4)
+```
+
+```{r dense-bootstrap, cache=FALSE}
+set.seed(bootstrap_seed)
+original_ids <- unique(pbc_age$id)
+bootstrap_samples <- lapply(seq_len(n_boot), function(index) {
+  sample(original_ids, length(original_ids), replace = TRUE)
+})
+
+run_dense_replicate <- function(index) {
+  row <- empty_bootstrap_rows(index)
+  sampled <- capture_conditions(resample_people(
+    pbc_age, bootstrap_samples[[index]]
+  ))
+  if (inherits(sampled$value, "error")) {
+    row$failed_step <- "resample"
+    row$failure_detail <- conditionMessage(sampled$value)
+    return(row)
+  }
+  stack_record <- capture_conditions(build_dense_stack(sampled$value))
+  if (inherits(stack_record$value, "error")) {
+    row$failed_step <- "stack"
+    row$failure_detail <- conditionMessage(stack_record$value)
+    return(row)
+  }
+  training_stack <- stack_record$value
+  for (age in dense_age_landmarks) {
+    at_age <- training_stack$data$LM == age
+    row$zero_transplants[row$landmark == age] <-
+      sum(training_stack$data$status[at_age] == 1L) == 0L
+    row$zero_deaths[row$landmark == age] <-
+      sum(training_stack$data$status[at_age] == 2L) == 0L
+  }
+
+  fit_record <- capture_conditions(dynamic_lm(
+    training_stack, dense_formula, type = "CSC",
+    method = "breslow", x = TRUE
+  ))
+  row$pooled_fit_warning <- paste(fit_record$warnings, collapse = " | ")
+  if (inherits(fit_record$value, "error") || length(fit_record$warnings)) {
+    transplant <- diagnose_cause(training_stack, 1L)
+    death <- diagnose_cause(training_stack, 2L)
+    row$transplant_fit_error <- transplant$error
+    row$transplant_fit_warning <- transplant$warning
+    row$death_fit_error <- death$error
+    row$death_fit_warning <- death$warning
+  }
+  if (inherits(fit_record$value, "error")) {
+    row$failed_step <- "pooled fit"
+    row$failure_detail <- conditionMessage(fit_record$value)
+    return(row)
+  }
+
+  nonfinite <- vapply(seq_along(fit_record$value$model$causes),
+    function(cause_index) {
+      fit <- fit_record$value$model$models[[cause_index]]
+      any(!is.finite(coef(fit)))
+    }, logical(1))
+  row$nonfinite_cause <- paste(
+    fit_record$value$model$causes[nonfinite], collapse = ", "
+  )
+
+  train_prediction <- capture_conditions(predict(
+    fit_record$value, newdata = training_stack, cause = 2L
+  ))
+  test_prediction <- capture_conditions(predict(
+    fit_record$value, newdata = dense_stack, cause = 2L
+  ))
+  for (age in dense_age_landmarks) {
+    at_age <- which(row$landmark == age)
+    if (inherits(train_prediction$value, "error")) {
+      row$failed_step[at_age] <- "train prediction"
+      row$failure_detail[at_age] <- conditionMessage(train_prediction$value)
+      next
+    }
+    if (inherits(test_prediction$value, "error")) {
+      row$failed_step[at_age] <- "test prediction"
+      row$failure_detail[at_age] <- conditionMessage(test_prediction$value)
+      next
+    }
+    train_subset <- capture_conditions(subset_prediction(
+      train_prediction$value, age
+    ))
+    test_subset <- capture_conditions(subset_prediction(
+      test_prediction$value, age
+    ))
+    if (inherits(train_subset$value, "error")) {
+      row$failed_step[at_age] <- "train prediction subset"
+      row$failure_detail[at_age] <- conditionMessage(train_subset$value)
+      next
+    }
+    if (inherits(test_subset$value, "error")) {
+      row$failed_step[at_age] <- "test prediction subset"
+      row$failure_detail[at_age] <- conditionMessage(test_subset$value)
+      next
+    }
+    train <- score_prediction(train_subset$value, age)
+    test <- score_prediction(test_subset$value, age)
+    row$train_AUC[at_age] <- train$AUC
+    row$test_AUC[at_age] <- test$AUC
+    row$train_Brier[at_age] <- train$Brier
+    row$test_Brier[at_age] <- test$Brier
+    if (nzchar(train$error)) {
+      row$failed_step[at_age] <- if (train$error == "NA predicted risk") {
+        "train prediction"
+      } else "train score"
+      row$failure_detail[at_age] <- train$error
+    } else if (nzchar(test$error)) {
+      row$failed_step[at_age] <- if (test$error == "NA predicted risk") {
+        "test prediction"
+      } else "test score"
+      row$failure_detail[at_age] <- test$error
+    } else {
+      row$complete[at_age] <- TRUE
+    }
+  }
+  row
+}
+
+safe_dense_replicate <- function(index) {
+  tryCatch(run_dense_replicate(index), error = function(error) {
+    row <- empty_bootstrap_rows(index)
+    row$failed_step <- "unexpected error"
+    row$failure_detail <- conditionMessage(error)
+    row
+  })
+}
+
+bootstrap_cores <- getOption(
+  "timescale.bootstrap.cores",
+  if (.Platform$OS.type == "windows") 1L else
+    min(4L, parallel::detectCores(logical = FALSE))
+)
+bootstrap_rows <- if (.Platform$OS.type == "windows" ||
+                      bootstrap_cores <= 1L) {
+  lapply(seq_len(n_boot), safe_dense_replicate)
+} else {
+  parallel::mclapply(seq_len(n_boot), safe_dense_replicate,
+                     mc.cores = bootstrap_cores, mc.preschedule = FALSE)
+}
+bootstrap_diagnostics <- do.call(rbind, bootstrap_rows)
+rownames(bootstrap_diagnostics) <- NULL
+finite_scores <- with(bootstrap_diagnostics,
+  is.finite(train_AUC) & is.finite(test_AUC) &
+    is.finite(train_Brier) & is.finite(test_Brier))
+if (!identical(bootstrap_diagnostics$complete, finite_scores)) {
+  print(bootstrap_diagnostics[
+    bootstrap_diagnostics$complete != finite_scores,
+    c("replicate", "landmark", "complete", "failed_step",
+      "train_AUC", "test_AUC", "train_Brier", "test_Brier")
+  ])
+}
+stopifnot(
+  nrow(bootstrap_diagnostics) == n_boot * length(dense_age_landmarks),
+  !anyDuplicated(bootstrap_diagnostics[c("replicate", "landmark")]),
+  identical(bootstrap_diagnostics$complete, finite_scores),
+  all(nzchar(bootstrap_diagnostics$failed_step[!bootstrap_diagnostics$complete]))
+)
+```
+
+I separated zero-transplant windows from actual failures: a zero count in one
+window does not necessarily invalidate a pooled fit. The reason table gives
+the first step that prevented a complete train/test score, retaining the
+error text. Cause-specific fit conditions are shown separately.
+
+```{r dense-bootstrap-diagnostics}
+bootstrap_completion <- do.call(rbind, lapply(dense_age_landmarks,
+  function(age) {
+    rows <- bootstrap_diagnostics[
+      bootstrap_diagnostics$landmark == age, ]
+    data.frame(
+      landmark = age,
+      complete_score_pairs = sum(rows$complete),
+      incomplete_score_pairs = sum(!rows$complete),
+      complete_with_fit_warning = sum(
+        rows$complete & nzchar(rows$pooled_fit_warning)),
+      zero_transplant_resamples = sum(rows$zero_transplants, na.rm = TRUE),
+      zero_death_resamples = sum(rows$zero_deaths, na.rm = TRUE)
+    )
+  }
+))
+complete_everywhere <- tapply(bootstrap_diagnostics$complete,
+                              bootstrap_diagnostics$replicate, all)
+stopifnot(length(complete_everywhere) == n_boot,
+          all(bootstrap_completion$complete_score_pairs +
+                bootstrap_completion$incomplete_score_pairs == n_boot))
+
+failure_rows <- bootstrap_diagnostics[!bootstrap_diagnostics$complete, ]
+failure_reasons <- if (nrow(failure_rows)) {
+  aggregate(replicate ~ landmark + failed_step + failure_detail,
+            data = failure_rows, FUN = length)
+} else data.frame()
+if (nrow(failure_reasons)) {
+  names(failure_reasons)[names(failure_reasons) == "replicate"] <- "resamples"
+  failure_reasons <- failure_reasons[order(
+    failure_reasons$landmark, failure_reasons$failed_step,
+    failure_reasons$failure_detail), ]
+  rownames(failure_reasons) <- NULL
+}
+
+cause_conditions <- unique(bootstrap_diagnostics[c(
+  "replicate", "transplant_fit_error", "transplant_fit_warning",
+  "death_fit_error", "death_fit_warning", "nonfinite_cause",
+  "pooled_fit_warning"
+)])
+cause_condition_counts <- data.frame(
+  condition = c("Transplant fit error", "Transplant fit warning",
+                "Death fit error", "Death fit warning",
+                "Non-finite cause coefficient", "Pooled fit warning"),
+  resamples = c(
+    sum(nzchar(cause_conditions$transplant_fit_error)),
+    sum(nzchar(cause_conditions$transplant_fit_warning)),
+    sum(nzchar(cause_conditions$death_fit_error)),
+    sum(nzchar(cause_conditions$death_fit_warning)),
+    sum(nzchar(cause_conditions$nonfinite_cause)),
+    sum(nzchar(cause_conditions$pooled_fit_warning))
+  )
+)
+
+knitr::kable(bootstrap_completion)
+knitr::kable(data.frame(
+  bootstrap_resamples = n_boot,
+  complete_at_every_landmark = sum(complete_everywhere)
+))
+if (nrow(failure_reasons)) knitr::kable(failure_reasons)
+knitr::kable(cause_condition_counts)
+```
+
+At age `r dense_age_landmarks[which.max(bootstrap_completion$zero_transplant_resamples)]`,
+`r max(bootstrap_completion$zero_transplant_resamples)` resamples had no
+transplants in that window, yet `r bootstrap_completion$complete_score_pairs[which.max(bootstrap_completion$zero_transplant_resamples)]`
+still yielded complete pooled-model scores. Across all landmarks,
+`r sum(complete_everywhere)` resamples were complete throughout. Finite scores
+from a warned cause-specific fit remain flagged; I did not count a warning
+alone as a scoring failure.
+
+## Apparent and optimism-corrected performance
+
+I subtracted the mean training-minus-original optimism from each apparent
+landmark score. When not every resample had finite training and test scores,
+the corrected value is conditional on the complete resamples at that
+landmark; I do not treat it as an unconditional estimate.
+
+```{r dense-performance-table}
+dense_performance <- do.call(rbind, lapply(dense_age_landmarks,
+  function(age) {
+    apparent <- apparent_scores[apparent_scores$landmark == age, ]
+    paired <- bootstrap_diagnostics[
+      bootstrap_diagnostics$landmark == age &
+        bootstrap_diagnostics$complete, ]
+    stopifnot(nrow(apparent) == 1L)
+    data.frame(
+      landmark = age,
+      apparent_AUC = apparent$AUC,
+      optimism_corrected_AUC = if (nrow(paired)) {
+        apparent$AUC - mean(paired$train_AUC - paired$test_AUC)
+      } else NA_real_,
+      apparent_Brier = apparent$Brier,
+      optimism_corrected_Brier = if (nrow(paired)) {
+        apparent$Brier - mean(paired$train_Brier - paired$test_Brier)
+      } else NA_real_,
+      complete_score_pairs = nrow(paired),
+      interpretation = if (nrow(paired) == n_boot) {
+        "all resamples"
+      } else "conditional on complete resamples"
+    )
+  }
+))
+stopifnot(identical(dense_performance$complete_score_pairs,
+                    bootstrap_completion$complete_score_pairs))
+knitr::kable(dense_performance, digits = 4)
 ```
 
 # Session
