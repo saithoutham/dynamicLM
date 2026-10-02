@@ -2495,6 +2495,15 @@ knitr::kable(dense_performance, digits = 4)</code></pre>
 separate model at a landmark was evaluated on that landmark’s original
 risk set. I kept a row for every landmark even when the separate CSC fit
 or its prediction failed.</p>
+<p>The first separate fit had no warning, but its <code>male</code>
+coefficient was <code>NA</code> in both cause models: every subject in
+that risk set had <code>male</code> equal to zero. The other fitted
+coefficients were unchanged when I omitted <code>male</code> from a
+direct cause-specific fit. Prediction nevertheless failed because an
+aliased coefficient was passed through as missing, even though its
+contribution was zero for every training and target row. I resolved only
+that zero-valued alias at the first landmark; I left all other fit and
+prediction paths unchanged.</p>
 <pre class="r"><code>one_landmark_stack &lt;- function(stack, age) {
   out &lt;- stack
   out$data &lt;- stack$data[stack$data$LM == age, , drop = FALSE]
@@ -2502,6 +2511,133 @@ or its prediction failed.</p>
   stopifnot(nrow(out$data) &gt; 0L)
   out
 }
+
+first_dense_age &lt;- min(dense_age_landmarks)
+first_age_stack &lt;- one_landmark_stack(dense_stack_raw, first_dense_age)
+first_age_record &lt;- dense_disjoint_records[[as.character(first_dense_age)]]
+first_age_aliases &lt;- do.call(rbind, lapply(seq_along(
+  first_age_record$value$model$models
+), function(index) {
+  fit &lt;- first_age_record$value$model$models[[index]]
+  data.frame(
+    cause = cause_labels[index],
+    aliased_terms = paste(names(coef(fit))[is.na(coef(fit))], collapse = &quot;, &quot;),
+    unique_male_values = paste(unique(first_age_stack$data$male),
+                               collapse = &quot;, &quot;)
+  )
+}))
+stopifnot(
+  !inherits(first_age_record$value, &quot;error&quot;),
+  !anyNA(first_age_stack$data$male),
+  all(first_age_stack$data$male == 0),
+  all(first_age_aliases$aliased_terms == &quot;male&quot;)
+)
+knitr::kable(first_age_aliases,
+             caption = &quot;Unwarned zero-valued alias in the first separate fit&quot;)</code></pre>
+<table>
+<caption>Unwarned zero-valued alias in the first separate fit</caption>
+<thead>
+<tr class="header">
+<th align="left">cause</th>
+<th align="left">aliased_terms</th>
+<th align="left">unique_male_values</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Transplant</td>
+<td align="left">male</td>
+<td align="left">0</td>
+</tr>
+<tr class="even">
+<td align="left">Death</td>
+<td align="left">male</td>
+<td align="left">0</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>first_age_omit_male &lt;- do.call(rbind, lapply(seq_along(
+  first_age_record$value$model$models
+), function(index) {
+  reduced &lt;- survival::coxph(as.formula(paste0(
+    &quot;survival::Surv(LM, exit_age, status == &quot;, index, &quot;) ~ &quot;,
+    &quot;stage + trt + log_bili_z + albumin_z + cluster(id)&quot;
+  )), data = first_age_stack$data, method = &quot;breslow&quot;, x = TRUE)
+  full &lt;- first_age_record$value$model$models[[index]]
+  shared_terms &lt;- names(coef(reduced))
+  data.frame(cause = cause_labels[index],
+             largest_other_coefficient_difference = max(abs(
+               coef(full)[shared_terms] - coef(reduced)
+             )))
+}))
+stopifnot(all(first_age_omit_male$largest_other_coefficient_difference == 0))
+knitr::kable(first_age_omit_male)</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">cause</th>
+<th align="right">largest_other_coefficient_difference</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Transplant</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Death</td>
+<td align="right">0</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>unrepaired_first_age_prediction &lt;- capture_conditions(predict(
+  first_age_record$value, newdata = first_age_stack, cause = 2L
+))
+stopifnot(inherits(unrepaired_first_age_prediction$value, &quot;error&quot;))
+knitr::kable(data.frame(
+  prediction_error = conditionMessage(unrepaired_first_age_prediction$value)
+))</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">prediction_error</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">all rows of newdata have missing values</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>repair_zero_aliases &lt;- function(record, training, original) {
+  if (inherits(record$value, &quot;error&quot;)) return(record)
+  repaired &lt;- character()
+  for (index in seq_along(record$value$model$models)) {
+    fit &lt;- record$value$model$models[[index]]
+    aliased &lt;- names(coef(fit))[is.na(coef(fit))]
+    zero_in_both &lt;- vapply(aliased, function(term) {
+      term %in% names(training$data) &amp;&amp; term %in% names(original$data) &amp;&amp;
+        !anyNA(training$data[[term]]) &amp;&amp; !anyNA(original$data[[term]]) &amp;&amp;
+        all(training$data[[term]] == 0) &amp;&amp;
+        all(original$data[[term]] == 0)
+    }, logical(1))
+    if (any(zero_in_both)) {
+      terms &lt;- aliased[zero_in_both]
+      record$value$model$models[[index]]$coefficients[terms] &lt;- 0
+      repaired &lt;- c(repaired, paste(record$value$model$causes[index],
+                                   terms, sep = &quot;:&quot;))
+    }
+  }
+  record$zero_alias_terms &lt;- paste(repaired, collapse = &quot;; &quot;)
+  record
+}
+
+first_age_scoring_record &lt;- repair_zero_aliases(
+  first_age_record, first_age_stack, first_age_stack
+)
+stopifnot(setequal(strsplit(first_age_scoring_record$zero_alias_terms,
+                            &quot;; &quot;, fixed = TRUE)[[1L]],
+                   c(&quot;1:male&quot;, &quot;2:male&quot;)))
 
 score_original_fit &lt;- function(record, target, age) {
   if (inherits(record$value, &quot;error&quot;)) {
@@ -2536,8 +2672,11 @@ linear_apparent &lt;- do.call(rbind, lapply(dense_age_landmarks, function(age) {
              error = metric$error)
 }))
 disjoint_apparent &lt;- do.call(rbind, lapply(dense_age_landmarks, function(age) {
+  record &lt;- if (age == first_dense_age) {
+    first_age_scoring_record
+  } else dense_disjoint_records[[as.character(age)]]
   metric &lt;- score_original_fit(
-    dense_disjoint_records[[as.character(age)]],
+    record,
     one_landmark_stack(dense_stack_raw, age), age
   )
   data.frame(model = &quot;Disjoint&quot;, landmark = age,
@@ -2623,9 +2762,9 @@ knitr::kable(additional_apparent, digits = 4)</code></pre>
 <tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">42</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="left">all rows of newdata have missing values</td>
+<td align="right">0.7727</td>
+<td align="right">0.1685</td>
+<td align="left"></td>
 </tr>
 <tr class="even">
 <td align="left">Disjoint</td>
@@ -2685,7 +2824,8 @@ scores and diagnostics were not rewritten.</p>
 <pre class="r"><code>empty_additional_rows &lt;- function(index, model, ages) {
   data.frame(
     replicate = index, model = model, landmark = ages,
-    fit_warning = &quot;&quot;, train_AUC = NA_real_, test_AUC = NA_real_,
+    fit_warning = &quot;&quot;, zero_alias_terms = &quot;&quot;,
+    train_AUC = NA_real_, test_AUC = NA_real_,
     train_Brier = NA_real_, test_Brier = NA_real_,
     failed_step = &quot;&quot;, failure_detail = &quot;&quot;, complete = FALSE
   )
@@ -2695,6 +2835,9 @@ score_fit_in_resample &lt;- function(record, training, original, ages,
                                   index, model) {
   rows &lt;- empty_additional_rows(index, model, ages)
   rows$fit_warning &lt;- paste(record$warnings, collapse = &quot; | &quot;)
+  if (!is.null(record$zero_alias_terms)) {
+    rows$zero_alias_terms &lt;- record$zero_alias_terms
+  }
   if (inherits(record$value, &quot;error&quot;)) {
     rows$failed_step &lt;- &quot;fit&quot;
     rows$failure_detail &lt;- conditionMessage(record$value)
@@ -2811,6 +2954,9 @@ run_additional_replicate &lt;- function(index) {
       training, dense_disjoint_formula,
       type = &quot;CSC&quot;, method = &quot;breslow&quot;, x = TRUE
     ))
+    if (age == first_dense_age) {
+      record &lt;- repair_zero_aliases(record, training, original)
+    }
     score_fit_in_resample(record, training, original,
                           age, index, &quot;Disjoint&quot;)
   })
@@ -2882,1138 +3028,1138 @@ if (nrow(additional_failure_counts)) {
 </thead>
 <tbody>
 <tr class="odd">
-<td align="left">Disjoint</td>
-<td align="right">42</td>
-<td align="left">train prediction</td>
-<td align="left">all rows of newdata have missing values</td>
-<td align="right">191</td>
-</tr>
-<tr class="even">
 <td align="left">Linear supermodel</td>
 <td align="right">42</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">51</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Linear supermodel</td>
 <td align="right">44</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">6</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Linear supermodel</td>
 <td align="right">46</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Linear supermodel</td>
 <td align="right">48</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Linear supermodel</td>
 <td align="right">50</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Linear supermodel</td>
 <td align="right">52</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Linear supermodel</td>
 <td align="right">54</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Linear supermodel</td>
 <td align="right">56</td>
 <td align="left">train prediction</td>
 <td align="left">all rows of newdata have missing values</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 21, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 22, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 23, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 24, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 26, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 27, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 30, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 31, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 32, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 33, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 35, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 36, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 36, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 37, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 37, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 38, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 38, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 38, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 39, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 39, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 39, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 41, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 41, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 41, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 42, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 42, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 42, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 43, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 43, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 43, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 43, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 43, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 44, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 44, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 45, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 45, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 45, 0</td>
 <td align="right">6</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 45, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 46, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 46, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 46, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 46, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 47, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 47, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 47, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 47, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 47, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 48, 0</td>
 <td align="right">8</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 49, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 49, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 49, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 49, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 49, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 50, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 50, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 50, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 50, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 50, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 51, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 51, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 51, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 51, 0</td>
 <td align="right">6</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 51, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 52, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 52, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 52, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 52, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 52, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 53, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 53, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 53, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 53, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 53, 0</td>
 <td align="right">6</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 53, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 54, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 54, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 54, 0</td>
 <td align="right">9</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 54, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 55, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 55, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 55, 0</td>
 <td align="right">7</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 55, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 56, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 56, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 56, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 56, 0</td>
 <td align="right">11</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 56, 0</td>
 <td align="right">6</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 57, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 57, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 57, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 57, 0</td>
 <td align="right">9</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 57, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 58, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 58, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 58, 0</td>
 <td align="right">10</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 58, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 59, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 59, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 59, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 59, 0</td>
 <td align="right">11</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 59, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 60, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 60, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 60, 0</td>
 <td align="right">7</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 60, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 61, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 61, 0</td>
 <td align="right">10</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 61, 0</td>
 <td align="right">7</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 62, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 62, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 62, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 62, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 63, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 63, 0</td>
 <td align="right">15</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 63, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 64, 0</td>
 <td align="right">12</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 64, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 65, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 65, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 65, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 66, 0</td>
 <td align="right">8</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 67, 0</td>
 <td align="right">7</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 67, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 68, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 68, 0</td>
 <td align="right">7</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 68, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 69, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 69, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 70, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 70, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 71, 0</td>
 <td align="right">6</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 72, 0</td>
 <td align="right">5</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 73, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 74, 0</td>
 <td align="right">3</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 75, 0</td>
 <td align="right">4</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 76, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">56</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 77, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 78, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 79, 0</td>
 <td align="right">2</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 80, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">54</td>
 <td align="left">fit</td>
 <td align="left">arguments imply differing number of rows: 84, 0</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">exp overflow due to covariates</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">fit</td>
 <td align="left">exp overflow due to covariates</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">exp overflow due to covariates</td>
 <td align="right">1</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">42</td>
 <td align="left">fit</td>
 <td align="left">infinite argument in coxph.wtest</td>
 <td align="right">9</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">fit</td>
 <td align="left">infinite argument in coxph.wtest</td>
 <td align="right">9</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">fit</td>
 <td align="left">infinite argument in coxph.wtest</td>
 <td align="right">12</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">fit</td>
 <td align="left">infinite argument in coxph.wtest</td>
 <td align="right">10</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">fit</td>
 <td align="left">infinite argument in coxph.wtest</td>
 <td align="right">4</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">fit</td>
 <td align="left">infinite argument in coxph.wtest</td>
 <td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
+<td align="right">42</td>
+<td align="left">train prediction subset</td>
+<td align="left">No predicted rows at age 42</td>
+<td align="right">10</td>
 </tr>
 <tr class="odd">
 <td align="left">Disjoint</td>
@@ -4103,38 +4249,80 @@ never happen. Please contact the author.</td>
 </tr>
 <tr class="odd">
 <td align="left">Disjoint</td>
+<td align="right">42</td>
+<td align="left">train prediction</td>
+<td align="left">zero non-NA points</td>
+<td align="right">3</td>
+</tr>
+<tr class="even">
+<td align="left">Disjoint</td>
 <td align="right">44</td>
 <td align="left">train prediction</td>
 <td align="left">zero non-NA points</td>
 <td align="right">1</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">46</td>
 <td align="left">train prediction</td>
 <td align="left">zero non-NA points</td>
 <td align="right">21</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">48</td>
 <td align="left">train prediction</td>
 <td align="left">zero non-NA points</td>
 <td align="right">21</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Disjoint</td>
 <td align="right">50</td>
 <td align="left">train prediction</td>
 <td align="left">zero non-NA points</td>
 <td align="right">20</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Disjoint</td>
 <td align="right">52</td>
 <td align="left">train prediction</td>
 <td align="left">zero non-NA points</td>
 <td align="right">22</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>first_age_bootstrap &lt;- additional_bootstrap[
+  additional_bootstrap$model == &quot;Disjoint&quot; &amp;
+    additional_bootstrap$landmark == first_dense_age, ]
+stopifnot(nrow(first_age_bootstrap) == n_boot)
+knitr::kable(data.frame(
+  landmark = first_dense_age,
+  zero_alias_repairs = sum(nzchar(first_age_bootstrap$zero_alias_terms)),
+  complete_score_pairs = sum(first_age_bootstrap$complete),
+  bootstrap_resamples = n_boot
+), caption = &quot;First-landmark separate-model prediction check&quot;)</code></pre>
+<table>
+<caption>First-landmark separate-model prediction check</caption>
+<colgroup>
+<col width="13%" />
+<col width="27%" />
+<col width="30%" />
+<col width="28%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="right">landmark</th>
+<th align="right">zero_alias_repairs</th>
+<th align="right">complete_score_pairs</th>
+<th align="right">bootstrap_resamples</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">42</td>
+<td align="right">191</td>
+<td align="right">178</td>
+<td align="right">200</td>
 </tr>
 </tbody>
 </table>
@@ -4263,13 +4451,12 @@ knitr::kable(model_performance, digits = 4,
 <td align="right">7</td>
 <td align="right">7</td>
 <td align="left">Disjoint</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">0</td>
-<td align="left">unavailable: all rows of newdata have missing
-values</td>
+<td align="right">0.7727</td>
+<td align="right">0.7168</td>
+<td align="right">0.1685</td>
+<td align="right">0.1951</td>
+<td align="right">178</td>
+<td align="left">conditional on complete resamples</td>
 </tr>
 <tr class="even">
 <td align="right">44</td>
@@ -4646,30 +4833,30 @@ knitr::kable(paired_differences, digits = 4,
 <tr class="odd">
 <td align="right">42</td>
 <td align="left">Quadratic supermodel</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">0</td>
-<td align="left">unavailable original separate fit</td>
+<td align="right">-0.0250</td>
+<td align="right">-0.0750</td>
+<td align="right">-0.3388</td>
+<td align="right">0.1582</td>
+<td align="right">0.0129</td>
+<td align="right">0.0218</td>
+<td align="right">-0.0406</td>
+<td align="right">0.1138</td>
+<td align="right">168</td>
+<td align="left">conditional on paired finite fits</td>
 </tr>
 <tr class="even">
 <td align="right">42</td>
 <td align="left">Linear supermodel</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">NA</td>
-<td align="right">0</td>
-<td align="left">unavailable original separate fit</td>
+<td align="right">-0.0264</td>
+<td align="right">-0.0365</td>
+<td align="right">-0.2752</td>
+<td align="right">0.1909</td>
+<td align="right">0.0219</td>
+<td align="right">0.0217</td>
+<td align="right">-0.0439</td>
+<td align="right">0.1325</td>
+<td align="right">177</td>
+<td align="left">conditional on paired finite fits</td>
 </tr>
 <tr class="odd">
 <td align="right">44</td>
@@ -4869,6 +5056,8 @@ knitr::kable(paired_differences, digits = 4,
 </tr>
 </tbody>
 </table>
+<p>These comparisons use only resamples for which the separate model
+could be scored on both the resampled and original risk sets.</p>
 </div>
 </div>
 <div id="session" class="section level1">

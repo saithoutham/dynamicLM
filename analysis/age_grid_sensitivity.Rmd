@@ -1006,6 +1006,14 @@ I used the same `score()` call for all three models. The separate model at a
 landmark was evaluated on that landmark's original risk set. I kept a row for
 every landmark even when the separate CSC fit or its prediction failed.
 
+The first separate fit had no warning, but its `male` coefficient was `NA` in
+both cause models: every subject in that risk set had `male` equal to zero.
+The other fitted coefficients were unchanged when I omitted `male` from a
+direct cause-specific fit. Prediction nevertheless failed because an aliased
+coefficient was passed through as missing, even though its contribution was
+zero for every training and target row. I resolved only that zero-valued alias
+at the first landmark; I left all other fit and prediction paths unchanged.
+
 ```{r additional-apparent-performance}
 one_landmark_stack <- function(stack, age) {
   out <- stack
@@ -1014,6 +1022,84 @@ one_landmark_stack <- function(stack, age) {
   stopifnot(nrow(out$data) > 0L)
   out
 }
+
+first_dense_age <- min(dense_age_landmarks)
+first_age_stack <- one_landmark_stack(dense_stack_raw, first_dense_age)
+first_age_record <- dense_disjoint_records[[as.character(first_dense_age)]]
+first_age_aliases <- do.call(rbind, lapply(seq_along(
+  first_age_record$value$model$models
+), function(index) {
+  fit <- first_age_record$value$model$models[[index]]
+  data.frame(
+    cause = cause_labels[index],
+    aliased_terms = paste(names(coef(fit))[is.na(coef(fit))], collapse = ", "),
+    unique_male_values = paste(unique(first_age_stack$data$male),
+                               collapse = ", ")
+  )
+}))
+stopifnot(
+  !inherits(first_age_record$value, "error"),
+  !anyNA(first_age_stack$data$male),
+  all(first_age_stack$data$male == 0),
+  all(first_age_aliases$aliased_terms == "male")
+)
+knitr::kable(first_age_aliases,
+             caption = "Unwarned zero-valued alias in the first separate fit")
+
+first_age_omit_male <- do.call(rbind, lapply(seq_along(
+  first_age_record$value$model$models
+), function(index) {
+  reduced <- survival::coxph(as.formula(paste0(
+    "survival::Surv(LM, exit_age, status == ", index, ") ~ ",
+    "stage + trt + log_bili_z + albumin_z + cluster(id)"
+  )), data = first_age_stack$data, method = "breslow", x = TRUE)
+  full <- first_age_record$value$model$models[[index]]
+  shared_terms <- names(coef(reduced))
+  data.frame(cause = cause_labels[index],
+             largest_other_coefficient_difference = max(abs(
+               coef(full)[shared_terms] - coef(reduced)
+             )))
+}))
+stopifnot(all(first_age_omit_male$largest_other_coefficient_difference == 0))
+knitr::kable(first_age_omit_male)
+
+unrepaired_first_age_prediction <- capture_conditions(predict(
+  first_age_record$value, newdata = first_age_stack, cause = 2L
+))
+stopifnot(inherits(unrepaired_first_age_prediction$value, "error"))
+knitr::kable(data.frame(
+  prediction_error = conditionMessage(unrepaired_first_age_prediction$value)
+))
+
+repair_zero_aliases <- function(record, training, original) {
+  if (inherits(record$value, "error")) return(record)
+  repaired <- character()
+  for (index in seq_along(record$value$model$models)) {
+    fit <- record$value$model$models[[index]]
+    aliased <- names(coef(fit))[is.na(coef(fit))]
+    zero_in_both <- vapply(aliased, function(term) {
+      term %in% names(training$data) && term %in% names(original$data) &&
+        !anyNA(training$data[[term]]) && !anyNA(original$data[[term]]) &&
+        all(training$data[[term]] == 0) &&
+        all(original$data[[term]] == 0)
+    }, logical(1))
+    if (any(zero_in_both)) {
+      terms <- aliased[zero_in_both]
+      record$value$model$models[[index]]$coefficients[terms] <- 0
+      repaired <- c(repaired, paste(record$value$model$causes[index],
+                                   terms, sep = ":"))
+    }
+  }
+  record$zero_alias_terms <- paste(repaired, collapse = "; ")
+  record
+}
+
+first_age_scoring_record <- repair_zero_aliases(
+  first_age_record, first_age_stack, first_age_stack
+)
+stopifnot(setequal(strsplit(first_age_scoring_record$zero_alias_terms,
+                            "; ", fixed = TRUE)[[1L]],
+                   c("1:male", "2:male")))
 
 score_original_fit <- function(record, target, age) {
   if (inherits(record$value, "error")) {
@@ -1048,8 +1134,11 @@ linear_apparent <- do.call(rbind, lapply(dense_age_landmarks, function(age) {
              error = metric$error)
 }))
 disjoint_apparent <- do.call(rbind, lapply(dense_age_landmarks, function(age) {
+  record <- if (age == first_dense_age) {
+    first_age_scoring_record
+  } else dense_disjoint_records[[as.character(age)]]
   metric <- score_original_fit(
-    dense_disjoint_records[[as.character(age)]],
+    record,
     one_landmark_stack(dense_stack_raw, age), age
   )
   data.frame(model = "Disjoint", landmark = age,
@@ -1069,7 +1158,8 @@ were not rewritten.
 empty_additional_rows <- function(index, model, ages) {
   data.frame(
     replicate = index, model = model, landmark = ages,
-    fit_warning = "", train_AUC = NA_real_, test_AUC = NA_real_,
+    fit_warning = "", zero_alias_terms = "",
+    train_AUC = NA_real_, test_AUC = NA_real_,
     train_Brier = NA_real_, test_Brier = NA_real_,
     failed_step = "", failure_detail = "", complete = FALSE
   )
@@ -1079,6 +1169,9 @@ score_fit_in_resample <- function(record, training, original, ages,
                                   index, model) {
   rows <- empty_additional_rows(index, model, ages)
   rows$fit_warning <- paste(record$warnings, collapse = " | ")
+  if (!is.null(record$zero_alias_terms)) {
+    rows$zero_alias_terms <- record$zero_alias_terms
+  }
   if (inherits(record$value, "error")) {
     rows$failed_step <- "fit"
     rows$failure_detail <- conditionMessage(record$value)
@@ -1195,6 +1288,9 @@ run_additional_replicate <- function(index) {
       training, dense_disjoint_formula,
       type = "CSC", method = "breslow", x = TRUE
     ))
+    if (age == first_dense_age) {
+      record <- repair_zero_aliases(record, training, original)
+    }
     score_fit_in_resample(record, training, original,
                           age, index, "Disjoint")
   })
@@ -1252,6 +1348,16 @@ if (nrow(additional_failure_counts)) {
   knitr::kable(additional_failure_counts,
                caption = "Reasons for incomplete training/test score pairs")
 }
+first_age_bootstrap <- additional_bootstrap[
+  additional_bootstrap$model == "Disjoint" &
+    additional_bootstrap$landmark == first_dense_age, ]
+stopifnot(nrow(first_age_bootstrap) == n_boot)
+knitr::kable(data.frame(
+  landmark = first_dense_age,
+  zero_alias_repairs = sum(nzchar(first_age_bootstrap$zero_alias_terms)),
+  complete_score_pairs = sum(first_age_bootstrap$complete),
+  bootstrap_resamples = n_boot
+), caption = "First-landmark separate-model prediction check")
 ```
 
 ## Performance across the three specifications
@@ -1408,6 +1514,9 @@ stopifnot(nrow(paired_differences) == length(dense_age_landmarks) * 2L)
 knitr::kable(paired_differences, digits = 4,
              caption = "Supermodel minus separate-model death prediction")
 ```
+
+These comparisons use only resamples for which the separate model could be
+scored on both the resampled and original risk sets.
 
 # Session
 
