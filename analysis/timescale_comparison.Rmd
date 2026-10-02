@@ -1723,7 +1723,7 @@ summary_performance <- data.frame(
   summary_brier_standard_error = c(enrollment_brier_summary$se, NA_real_),
   inference = c(
     "Original analytic summary calculation",
-    age_left_truncated_scores$analytic_influence_function
+    "Point summary only; paired difference intervals below are percentiles of subject-resampled corrected differences"
   ),
   row.names = NULL
 )

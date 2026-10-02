@@ -5604,19 +5604,19 @@ summary_performance &lt;- data.frame(
   summary_brier_standard_error = c(enrollment_brier_summary$se, NA_real_),
   inference = c(
     &quot;Original analytic summary calculation&quot;,
-    age_left_truncated_scores$analytic_influence_function
+    &quot;Point summary only; paired difference intervals below are percentiles of subject-resampled corrected differences&quot;
   ),
   row.names = NULL
 )
 knitr::kable(summary_performance, digits = 4)</code></pre>
 <table>
 <colgroup>
-<col width="11%" />
-<col width="8%" />
-<col width="19%" />
-<col width="10%" />
-<col width="20%" />
-<col width="29%" />
+<col width="7%" />
+<col width="5%" />
+<col width="12%" />
+<col width="6%" />
+<col width="13%" />
+<col width="53%" />
 </colgroup>
 <thead>
 <tr class="header">
@@ -5643,7 +5643,8 @@ knitr::kable(summary_performance, digits = 4)</code></pre>
 <td align="right">NA</td>
 <td align="right">0.1482</td>
 <td align="right">NA</td>
-<td align="left">PENDING: not derived for staggered entry</td>
+<td align="left">Point summary only; paired difference intervals below
+are percentiles of subject-resampled corrected differences</td>
 </tr>
 </tbody>
 </table>
