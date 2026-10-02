@@ -1,0 +1,315 @@
+---
+title: "PBC attained-age landmark grid: overlap and event-count preflight"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    code_folding: show
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+library(here)
+devtools::load_all(here::here(), quiet = TRUE)
+
+prediction_window <- 5
+dense_age_landmarks <- seq(42, 56, by = 2)
+cause_labels <- c("Transplant", "Death")
+```
+
+# Purpose
+
+I kept the original time-scale comparison unchanged. This separate analysis
+tests whether a more closely spaced attained-age grid identifies landmark main
+effects and whether its competing-event counts support a bootstrap analysis.
+The candidate grid is a sensitivity analysis, not a replacement for the
+entry-age-quartile analysis.
+
+```{r analysis-data}
+pbc_long <- get_pbc_long()
+entry_ages <- unique(pbc_long[c("id", "age")])$age
+current_age_landmarks <- round(
+  unname(quantile(entry_ages, c(0.25, 0.50, 0.75), type = 8)), 1
+)
+
+pbc_age <- transform(
+  pbc_long,
+  log_bili_z = (log(bili) - mean(log(pbc_long$bili))) /
+    sd(log(pbc_long$bili)),
+  albumin_z = (albumin - mean(pbc_long$albumin)) / sd(pbc_long$albumin),
+  entry_age = age,
+  exit_age = age + time,
+  visit_age = age + tstart
+)
+
+stopifnot(
+  !anyDuplicated(unique(pbc_age[c("id", "entry_age")])$id),
+  all(is.finite(pbc_age$log_bili_z)),
+  all(is.finite(pbc_age$albumin_z)),
+  all(diff(current_age_landmarks) > prediction_window),
+  all(diff(dense_age_landmarks) < prediction_window)
+)
+```
+
+# Why the current age grid cannot estimate landmark main effects
+
+I plotted the original landmark windows to make the lack of overlap visible.
+Each event risk set lies within one window. An LM main effect is therefore
+constant within that risk set and cancels from the Cox partial likelihood.
+The model still contains bilirubin-by-LM and albumin-by-LM interactions; it
+does not contain an estimable LM main effect on this grid.
+
+```{r current-window-plot, fig.width=7, fig.height=3.3}
+draw_current_windows <- function() {
+  window_ends <- current_age_landmarks + prediction_window
+  plot(NA, xlim = range(c(current_age_landmarks, window_ends)) + c(-0.5, 0.5),
+       ylim = c(0.5, length(current_age_landmarks) + 0.5),
+       yaxt = "n", xlab = "Attained age (years)", ylab = "",
+       main = "Current attained-age prediction windows", bty = "n")
+  axis(2, at = seq_along(current_age_landmarks),
+       labels = paste0("LM ", format(current_age_landmarks, nsmall = 1)),
+       las = 1, tick = FALSE)
+  abline(v = c(current_age_landmarks, window_ends), col = "grey90", lty = 3)
+  segments(current_age_landmarks, seq_along(current_age_landmarks),
+           window_ends, seq_along(current_age_landmarks),
+           lwd = 7, col = "#32658A", lend = "butt")
+  points(current_age_landmarks, seq_along(current_age_landmarks), pch = 16)
+  points(window_ends, seq_along(current_age_landmarks), pch = 1)
+  text((current_age_landmarks + window_ends) / 2,
+       seq_along(current_age_landmarks) + 0.16,
+       labels = sprintf("%.1f–%.1f", current_age_landmarks, window_ends),
+       cex = 0.85)
+}
+
+draw_current_windows()
+pdf(here::here("analysis", "current_age_windows.pdf"),
+    width = 7, height = 3.3)
+draw_current_windows()
+dev.off()
+```
+
+```{r current-window-check}
+current_stack <- stack_data(
+  pbc_age, list(time = "exit_age", status = "status"),
+  lms = current_age_landmarks, w = prediction_window,
+  covs = list(fixed = c("male", "stage", "trt"),
+              varying = c("log_bili_z", "albumin_z")),
+  format = "long", id = "id", rtime = "visit_age",
+  entry = "entry_age", entry_mode = "strict"
+)
+
+risk_set_lm_counts <- function(stack) {
+  event_times <- sort(unique(stack$data$exit_age[stack$data$status > 0]))
+  vapply(event_times, function(event_age) {
+    at_risk <- stack$data$LM < event_age & stack$data$exit_age >= event_age
+    length(unique(stack$data$LM[at_risk]))
+  }, integer(1))
+}
+
+current_lm_counts <- risk_set_lm_counts(current_stack)
+stopifnot(length(current_lm_counts) > 0L,
+          all(current_lm_counts == 1L))
+knitr::kable(data.frame(
+  grid = "Current entry-age quartiles",
+  event_times = length(current_lm_counts),
+  event_times_with_multiple_LMs = sum(current_lm_counts > 1L)
+))
+```
+
+# Dense-grid risk sets
+
+I used the same strict-entry rule, event coding, prediction window, and
+laboratory transformations as the primary attained-age analysis. I checked
+the number of people and both event types in every window before fitting or
+resampling. These counts are stacked-window counts: an event can contribute
+to more than one overlapping window.
+
+```{r dense-risk-sets}
+dense_stack_raw <- stack_data(
+  pbc_age, list(time = "exit_age", status = "status"),
+  lms = dense_age_landmarks, w = prediction_window,
+  covs = list(fixed = c("male", "stage", "trt"),
+              varying = c("log_bili_z", "albumin_z")),
+  format = "long", id = "id", rtime = "visit_age",
+  entry = "entry_age", entry_mode = "strict"
+)
+
+dense_risk_sets <- do.call(rbind, lapply(dense_age_landmarks, function(age) {
+  rows <- dense_stack_raw$data[dense_stack_raw$data$LM == age, , drop = FALSE]
+  data.frame(
+    landmark = age,
+    window_end = age + prediction_window,
+    subjects = length(unique(rows$id)),
+    deaths = sum(rows$status == 2L),
+    transplants = sum(rows$status == 1L),
+    censored = sum(rows$status == 0L)
+  )
+}))
+
+dense_lm_counts <- risk_set_lm_counts(dense_stack_raw)
+stopifnot(
+  identical(dense_stack_raw$entry_mode, "strict"),
+  all(dense_stack_raw$data$entry_age <= dense_stack_raw$data$LM),
+  all(dense_stack_raw$data$LM < dense_stack_raw$data$exit_age),
+  !anyDuplicated(dense_stack_raw$data[c("id", "LM")]),
+  all(dense_risk_sets$subjects > 0L),
+  all(dense_risk_sets$subjects ==
+        dense_risk_sets$deaths + dense_risk_sets$transplants +
+        dense_risk_sets$censored),
+  any(dense_lm_counts > 1L)
+)
+
+knitr::kable(dense_risk_sets,
+             caption = "Strict-entry risk sets on the candidate age grid")
+knitr::kable(data.frame(
+  grid = "Candidate two-year grid",
+  event_times = length(dense_lm_counts),
+  event_times_with_multiple_LMs = sum(dense_lm_counts > 1L),
+  maximum_LMs_in_one_risk_set = max(dense_lm_counts)
+))
+```
+
+The dense windows overlap, and the observed event risk sets contain multiple
+landmark values. This removes the exact non-identifiability of LM main effects
+seen on the original grid. It does not by itself establish that the
+competing-risk fit or its bootstrap is stable: the event-count table includes
+windows with very few transplants.
+
+# Candidate supermodel fit
+
+I used a centered quadratic landmark basis for both main effects and the two
+laboratory interactions. The other predictors and the cause-specific CSC fit
+match the primary attained-age specification.
+
+```{r dense-supermodel}
+dense_center <- mean(dense_age_landmarks)
+dense_half_range <- diff(range(dense_age_landmarks)) / 2
+dense_basis <- list(
+  function(age) (age - dense_center) / dense_half_range,
+  function(age) ((age - dense_center) / dense_half_range)^2
+)
+dense_stack <- add_interactions(
+  dense_stack_raw,
+  lm_covs = c("log_bili_z", "albumin_z"),
+  func_covars = dense_basis,
+  func_lms = dense_basis
+)
+stopifnot(all(c("LM1", "LM2", "log_bili_z_LM1", "log_bili_z_LM2",
+                "albumin_z_LM1", "albumin_z_LM2") %in%
+              names(dense_stack$data)))
+
+dense_formula <- Hist(exit_age, status, LM) ~
+  male + stage + trt +
+  log_bili_z + log_bili_z_LM1 + log_bili_z_LM2 +
+  albumin_z + albumin_z_LM1 + albumin_z_LM2 +
+  LM1 + LM2 + cluster(id)
+
+capture_conditions <- function(expression) {
+  warnings <- character()
+  value <- withCallingHandlers(
+    tryCatch(eval.parent(substitute(expression)), error = function(error) error),
+    warning = function(warning) {
+      warnings <<- c(warnings, conditionMessage(warning))
+      invokeRestart("muffleWarning")
+    }
+  )
+  list(value = value, warnings = unique(warnings))
+}
+
+dense_fit_record <- capture_conditions(dynamic_lm(
+  dense_stack, dense_formula, type = "CSC", method = "breslow", x = TRUE
+))
+
+fit_status <- data.frame(
+  error = if (inherits(dense_fit_record$value, "error")) {
+    conditionMessage(dense_fit_record$value)
+  } else "",
+  warnings = paste(dense_fit_record$warnings, collapse = " | ")
+)
+knitr::kable(fit_status)
+
+if (!inherits(dense_fit_record$value, "error")) {
+  dense_fit <- dense_fit_record$value
+  dense_lm_inference <- do.call(rbind, lapply(seq_along(
+    dense_fit$model$causes
+  ), function(index) {
+    fit <- dense_fit$model$models[[index]]
+    terms <- c("LM1", "LM2")
+    data.frame(
+      cause = cause_labels[as.integer(dense_fit$model$causes[index])],
+      term = terms,
+      coefficient = unname(coef(fit)[terms]),
+      robust_se = unname(sqrt(diag(vcov(fit)))[terms])
+    )
+  }))
+  stopifnot(all(is.finite(dense_lm_inference$coefficient)),
+            all(is.finite(dense_lm_inference$robust_se)))
+  knitr::kable(dense_lm_inference, digits = 3)
+}
+```
+
+# Separate landmark fits as a sparsity check
+
+I also tried the unchanged, one-model-per-landmark specification. I recorded
+all fit warnings and errors rather than modifying a sparse fit to make it
+converge. The pooled supermodel can be estimable even when a separate
+competing-risk fit at one age is not.
+
+```{r dense-disjoint-fit-check}
+dense_disjoint_formula <- Hist(exit_age, status, LM) ~
+  male + stage + trt + log_bili_z + albumin_z + cluster(id)
+
+dense_disjoint_conditions <- do.call(rbind, lapply(
+  dense_age_landmarks, function(age) {
+    one_landmark <- dense_stack_raw
+    one_landmark$data <- dense_stack_raw$data[
+      dense_stack_raw$data$LM == age, , drop = FALSE
+    ]
+    one_landmark$end_time <- age
+    fit_record <- capture_conditions(dynamic_lm(
+      one_landmark, dense_disjoint_formula,
+      type = "CSC", method = "breslow", x = TRUE
+    ))
+    data.frame(
+      landmark = age,
+      fit_error = if (inherits(fit_record$value, "error")) {
+        conditionMessage(fit_record$value)
+      } else "",
+      warnings = paste(fit_record$warnings, collapse = " | ")
+    )
+  }
+))
+
+stopifnot(nrow(dense_disjoint_conditions) == length(dense_age_landmarks))
+knitr::kable(dense_disjoint_conditions)
+```
+
+# Bootstrap decision
+
+I did not rerun the full subject bootstrap at this preflight stage. The
+separate-model fit table shows an original-sample failure in a window with no
+transplants. Resampling cannot repair that specification. The pooled fit above
+can still be finite because the overlapping windows and quadratic basis borrow
+information, but that observation is not evidence of complete train/test
+predictions across bootstrap replicates.
+The next decision is whether to retain this grid, trim its sparse end, or
+prespecify a different transplant model. That choice should precede an
+optimism-correction run rather than be made in response to its result.
+
+```{r bootstrap-preflight}
+bootstrap_preflight <- data.frame(
+  minimum_subjects = min(dense_risk_sets$subjects),
+  minimum_deaths = min(dense_risk_sets$deaths),
+  minimum_transplants = min(dense_risk_sets$transplants),
+  windows_with_zero_transplants = sum(dense_risk_sets$transplants == 0L),
+  full_bootstrap_run = FALSE
+)
+knitr::kable(bootstrap_preflight)
+```
+
+# Session
+
+```{r session-info}
+sessionInfo()
+```
